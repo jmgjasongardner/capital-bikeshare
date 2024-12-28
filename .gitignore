@@ -1,0 +1,63 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+.venv/bin
+# Byte-compiled and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+ENV/
+
+# Package and dependency files
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# Editor and IDE configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+*.sublime-workspace
+*.sublime-project
+
+# Logs and database files
+*.log
+*.sqlite3
+
+# Environment variables and secrets
+.env
+*.key
+*.pem
+
+# OS-specific files
+Thumbs.db
+.DS_Store
+
+# Generated documentation
+/build/
+docs/_build/
+site/
+
+# Testing and coverage reports
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+.nox/
+.tox/
+*.cache
+
+# AWS credentials and configs (if relevant)
+.aws/
+
+# Data storage
+*.csv
+*.parquet
+*.html
