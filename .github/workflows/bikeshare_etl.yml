@@ -1,0 +1,48 @@
+name: Capital Bikeshare Monthly ETL
+
+on:
+  schedule:
+    # 6:00 AM on the 11th of every month
+    # GitHub Actions uses UTC
+    - cron: "0 6 11 * *"
+
+  # Allows manual runs from the GitHub UI
+  workflow_dispatch:
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      S3_BUCKET_RAW: ${{ secrets.S3_BUCKET_RAW }}
+      S3_BUCKET_PROCESSED: ${{ secrets.S3_BUCKET_PROCESSED }}
+      STATIONS_KEY: ${{ secrets.STATIONS_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pull raw Capital Bikeshare data (incremental)
+        run: |
+          python scripts/pull_raw_data.py
+
+      - name: Build master trips table (missing months only)
+        run: |
+          python -m src.capitalbike.data.ingest
+
+      - name: Build station summaries
+        run: |
+          python -m src.capitalbike.data.summarize
