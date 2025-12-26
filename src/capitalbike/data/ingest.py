@@ -150,9 +150,12 @@ def build_master_table(*, missing_months: bool = True) -> None:
         )
 
         if missing_months:
-            df = df.filter(
-                pl.struct(["year", "month"]).is_in(list(candidate_months))
-            )
+            year_month_filters = [
+                (pl.col("year") == y) & (pl.col("month") == m)
+                for (y, m) in candidate_months
+            ]
+
+            df = df.filter(pl.any_horizontal(year_month_filters))
 
         # Drop any station cols before join (station table is authoritative)
         df = df.drop(
@@ -163,8 +166,7 @@ def build_master_table(*, missing_months: bool = True) -> None:
                 "end_station_name",
                 "end_lat",
                 "end_lng",
-            ],
-            strict=False,
+            ]
         )
 
         df = df.join(stations_start, on="start_station_id", how="left")
