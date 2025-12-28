@@ -61,3 +61,13 @@ htmlcov/
 *.csv
 *.parquet
 *.html
+
+# PDM local interpreter pin (machine-specific)
+.pdm-python
+
+# Streamlit secrets (contains credentials)
+.streamlit/secrets.toml
+
+# R scratch work
+.Renviron
+.Rhistory

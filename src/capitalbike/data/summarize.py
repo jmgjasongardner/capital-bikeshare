@@ -1,147 +1,166 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
+from typing import Tuple
 
+import boto3
 import polars as pl
-from dotenv import load_dotenv
-from src.capitalbike.data.ingest import _write_parquet_to_s3
 
-load_dotenv()
 
 PROC_BUCKET = os.getenv("S3_BUCKET_PROCESSED", "capital-bikeshare-manipulated")
+MASTER_PREFIX = os.getenv("S3_PREFIX_MASTER", "master/trips")
+STATIONS_KEY = os.getenv("S3_KEY_STATIONS", "dimensions/stations.parquet")
+AGG_PREFIX = os.getenv("S3_PREFIX_AGG", "aggregates")
+
+
+# --------------------------------------------------
+# S3 helpers
+# --------------------------------------------------
+def _s3() -> boto3.client:
+    return boto3.client("s3")
+
+
+def _parse_s3_uri(uri: str) -> Tuple[str, str]:
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI, got: {uri}")
+    no_scheme = uri.replace("s3://", "", 1)
+    bucket, key = no_scheme.split("/", 1)
+    return bucket, key
+
+
+def _write_parquet_to_s3(df: pl.DataFrame, s3_uri: str) -> None:
+    bucket, key = _parse_s3_uri(s3_uri)
+    buf = BytesIO()
+    df.write_parquet(buf)
+    buf.seek(0)
+    _s3().put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
 
 
 def _trips_scan() -> pl.LazyFrame:
-    """
-    Lazy scan of the partitioned master trips table on S3.
-    """
-    path = f"s3://{PROC_BUCKET}/trips/year=*/month=*/*.parquet"
-    return pl.scan_parquet(path)
-
-
-def build_station_daily() -> None:
-    """
-    Build daily station summary and write to S3:
-
-      s3://{PROC_BUCKET}/station_daily.parquet
-    """
-    trips = _trips_scan()
-
-    trips_with_date = trips.with_columns(
-        pl.date("year", "month", "day").alias("date")
+    return pl.scan_parquet(
+        f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/year=*/month=*/part.parquet"
     )
 
-    # Checkouts (starts)
-    checkouts = (
-        trips_with_date
-        .group_by(["date", "start_station_id"])
+
+def _stations_scan() -> pl.LazyFrame:
+    return pl.scan_parquet(f"s3://{PROC_BUCKET}/{STATIONS_KEY}")
+
+
+# --------------------------------------------------
+# Aggregates
+# --------------------------------------------------
+def build_system_daily() -> None:
+    trips = _trips_scan()
+
+    out = (
+        trips.with_columns(pl.col("started_at").dt.date().alias("date"))
+        .group_by("date")
         .agg(
-            pl.len().alias("num_checkouts"),
-            pl.mean("duration_sec").alias("avg_duration_sec"),
-            pl.n_unique("bike_number").alias("distinct_bikes_out"),
+            [
+                pl.len().alias("trips"),
+                pl.col("duration_sec").mean().alias("avg_duration_sec"),
+            ]
+        )
+        .sort("date")
+        .collect()
+    )
+
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/system_daily.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    print(f"System_daily written to {out_uri}")
+
+
+def build_station_daily(sample: bool = False) -> None:
+    trips = _trips_scan()
+    stations = _stations_scan()
+
+    base = (
+        trips.with_columns(pl.col("started_at").dt.date().alias("date"))
+        .group_by(["start_station_id", "date"])
+        .agg(
+            [
+                pl.len().alias("num_checkouts"),
+                pl.col("duration_sec").mean().alias("avg_duration_sec"),
+            ]
         )
         .rename({"start_station_id": "station_id"})
     )
 
-    # Returns (ends)
-    returns = (
-        trips_with_date
-        .group_by(["date", "end_station_id"])
-        .agg(
-            pl.len().alias("num_returns"),
-        )
-        .rename({"end_station_id": "station_id"})
-    )
-
-    station_daily = (
-        checkouts.join(
-            returns,
-            on=["date", "station_id"],
-            how="outer_coalesce",
-        )
-        .with_columns(
-            pl.col("num_checkouts").fill_null(0),
-            pl.col("num_returns").fill_null(0),
-        )
-        .with_columns(
-            (pl.col("num_checkouts") - pl.col("num_returns")).alias("net_flow")
+    out = (
+        base.join(stations, on="station_id", how="left")
+        .select(
+            [
+                "date",
+                "station_id",
+                "station_name",
+                "lat",
+                "lng",
+                "num_checkouts",
+                "avg_duration_sec",
+            ]
         )
         .sort(["date", "station_id"])
+        .collect()
     )
 
-    df = station_daily.collect()
-    out_path = f"s3://{PROC_BUCKET}/station_daily.parquet"
-    _write_parquet_to_s3(
-        df,
-        PROC_BUCKET,
-        "station_daily.parquet",
-    )
-    print(f"✅ station_daily written to {out_path}")
+    if sample:
+        out = out.sample(n=min(200_000, out.height), seed=42)
+
+    name = "station_daily_sample" if sample else "station_daily"
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/{name}.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    print(f"{name} written to {out_uri}")
 
 
 def build_station_hourly() -> None:
-    """
-    Build hourly station summary and write to S3:
-
-      s3://{PROC_BUCKET}/station_hourly.parquet
-    """
     trips = _trips_scan()
+    stations = _stations_scan()
 
-    trips_with_date_hour = trips.with_columns(
-        [
-            pl.date("year", "month", "day").alias("date"),
-            pl.col("hour"),
-        ]
-    )
-
-    checkouts = (
-        trips_with_date_hour
-        .group_by(["date", "hour", "start_station_id"])
+    base = (
+        trips.with_columns(
+            [
+                pl.col("started_at").dt.date().alias("date"),
+                pl.col("started_at").dt.hour().alias("hour"),
+            ]
+        )
+        .group_by(["start_station_id", "date", "hour"])
         .agg(pl.len().alias("num_checkouts"))
         .rename({"start_station_id": "station_id"})
     )
 
-    returns = (
-        trips_with_date_hour
-        .group_by(["date", "hour", "end_station_id"])
-        .agg(pl.len().alias("num_returns"))
-        .rename({"end_station_id": "station_id"})
-    )
-
-    station_hourly = (
-        checkouts.join(
-            returns,
-            on=["date", "hour", "station_id"],
-            how="outer_coalesce",
+    out = (
+        base.join(
+            stations.select(["station_id", "station_name", "lat", "lng"]),
+            on="station_id",
+            how="left",
         )
-        .with_columns(
-            pl.col("num_checkouts").fill_null(0),
-            pl.col("num_returns").fill_null(0),
-        )
-        .with_columns(
-            (pl.col("num_checkouts") - pl.col("num_returns")).alias("net_flow")
+        .select(
+            [
+                "date",
+                "hour",
+                "station_id",
+                "station_name",
+                "lat",
+                "lng",
+                "num_checkouts",
+            ]
         )
         .sort(["date", "hour", "station_id"])
+        .collect()
     )
 
-    df = station_hourly.collect()
-    out_path = f"s3://{PROC_BUCKET}/station_hourly.parquet"
-    _write_parquet_to_s3(
-        df,
-        PROC_BUCKET,
-        "station_hourly.parquet",
-    )
-    print(f"✅ station_hourly written to {out_path}")
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/station_hourly.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    print(f"Station_hourly written to {out_uri}")
 
 
 def build_all_summaries() -> None:
-    build_station_daily()
+    build_system_daily()
+    build_station_daily(sample=False)
+    build_station_daily(sample=False)
     build_station_hourly()
 
 
-def main() -> None:
-    build_all_summaries()
-
-
 if __name__ == "__main__":
-    main()
+    build_all_summaries()
