@@ -2,204 +2,206 @@ from __future__ import annotations
 
 import os
 from io import BytesIO
-from typing import List, Set, Tuple
+from typing import Set, Tuple
 
 import boto3
 import polars as pl
-from dotenv import load_dotenv
 
 from src.capitalbike.data.transform import normalize_trip_schema
-from src.capitalbike.data.stations import load_stations, make_station_lookups
+from src.capitalbike.data.stations import build_station_dimension
 
-load_dotenv()
 
 RAW_BUCKET = os.getenv("S3_BUCKET_RAW", "capital-bikeshare-public")
+RAW_PREFIX = os.getenv("S3_PREFIX_RAW_MONTHLY", "")  # "" if monthly CSVs at bucket root
+
 PROC_BUCKET = os.getenv("S3_BUCKET_PROCESSED", "capital-bikeshare-manipulated")
-STATIONS_KEY = os.getenv("STATIONS_KEY", "bike_stations.parquet")
-TRIPS_PREFIX = "trips"
+MASTER_PREFIX = os.getenv("S3_PREFIX_MASTER", "master/trips")  # partitioned target
+STATIONS_KEY = os.getenv("S3_KEY_STATIONS", "dimensions/stations.parquet")
 
 
-# ---------- S3 helpers ----------
-
-
-def _get_s3_client():
+# --------------------------------------------------
+# S3 helpers
+# --------------------------------------------------
+def _s3() -> boto3.client:
     return boto3.client("s3")
 
 
-def _list_parquet_keys(bucket: str) -> List[str]:
-    s3 = _get_s3_client()
-    keys: List[str] = []
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if key.endswith(".parquet"):
-                keys.append(key)
-    keys.sort()
+def _parse_s3_uri(uri: str) -> Tuple[str, str]:
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI, got: {uri}")
+    no_scheme = uri.replace("s3://", "", 1)
+    bucket, key = no_scheme.split("/", 1)
+    return bucket, key
+
+
+def _write_parquet_to_s3(df: pl.DataFrame, s3_uri: str) -> None:
+    bucket, key = _parse_s3_uri(s3_uri)
+    buf = BytesIO()
+    df.write_parquet(buf)
+    buf.seek(0)
+    _s3().put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+
+
+def _list_keys(bucket: str, prefix: str) -> list[str]:
+    s3 = _s3()
+    keys: list[str] = []
+    token = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []):
+            keys.append(obj["Key"])
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
     return keys
 
 
-def _read_parquet_from_s3(bucket: str, key: str) -> pl.DataFrame:
-    s3 = _get_s3_client()
-    buf = BytesIO()
-    s3.download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pl.read_parquet(buf)
+def _existing_master_partitions() -> Set[Tuple[int, int]]:
+    """Return {(year, month)} already written under MASTER_PREFIX."""
+    prefix = f"{MASTER_PREFIX}/"
+    keys = _list_keys(PROC_BUCKET, prefix)
+    parts: Set[Tuple[int, int]] = set()
 
-
-def _write_parquet_to_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
-    s3 = _get_s3_client()
-    buf = BytesIO()
-    df.write_parquet(buf, compression="zstd")
-    buf.seek(0)
-    s3.upload_fileobj(buf, bucket, key)
-
-
-# ---------- Partition helpers ----------
-
-
-def _existing_partitions() -> Set[Tuple[int, int]]:
-    """
-    Return set of (year, month) already present in trips/.
-    """
-    s3 = _get_s3_client()
-    paginator = s3.get_paginator("list_objects_v2")
-
-    out: Set[Tuple[int, int]] = set()
-
-    for page in paginator.paginate(Bucket=PROC_BUCKET, Prefix=f"{TRIPS_PREFIX}/"):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if "/year=" in key and "/month=" in key:
-                try:
-                    year = int(key.split("year=")[1].split("/")[0])
-                    month = int(key.split("month=")[1].split("/")[0])
-                    out.add((year, month))
-                except ValueError:
-                    pass
-
-    return out
-
-
-def _raw_key_to_year_months(key: str) -> Set[Tuple[int, int]]:
-    """
-    Map raw parquet filename to the (year, month) values it contains.
-    """
-    stem = os.path.splitext(os.path.basename(key))[0]
-
-    # YYYYMM
-    if len(stem) == 6:
-        return {(int(stem[:4]), int(stem[4:]))}
-
-    # YYYY
-    if len(stem) == 4:
-        year = int(stem)
-        return {(year, m) for m in range(1, 13)}
-
-    return set()
-
-
-# ---------- Core ETL ----------
-
-
-def build_master_table(*, missing_months: bool = True) -> None:
-    """
-    Build the partitioned master trips table.
-
-    missing_months=True (default):
-        Only process (year, month) not already present in trips/.
-
-    missing_months=False:
-        Rebuild everything (overwrite behavior).
-    """
-    print(f"Loading station metadata from s3://{PROC_BUCKET}/{STATIONS_KEY}...")
-    stations = load_stations()
-    stations_start, stations_end = make_station_lookups(stations)
-
-    processed_partitions: Set[Tuple[int, int]] = set()
-    if missing_months:
-        processed_partitions = _existing_partitions()
-        print(f"Found {len(processed_partitions)} existing partitions")
-
-    print(f"Listing raw parquet files in s3://{RAW_BUCKET}/...")
-    raw_keys = _list_parquet_keys(RAW_BUCKET)
-    if not raw_keys:
-        raise RuntimeError(f"No parquet files found in bucket {RAW_BUCKET!r}")
-
-    for key in raw_keys:
-        candidate_months = _raw_key_to_year_months(key)
-
-        if missing_months:
-            candidate_months = candidate_months - processed_partitions
-            if not candidate_months:
-                print(f"Skipping {key} (no missing months)")
+    for k in keys:
+        # master/trips/year=2024/month=12/part.parquet
+        if "year=" in k and "month=" in k and k.endswith(".parquet"):
+            try:
+                year = int(k.split("year=")[1].split("/")[0])
+                month = int(k.split("month=")[1].split("/")[0])
+                parts.add((year, month))
+            except Exception:
                 continue
+    return parts
 
-        print(f"\nProcessing raw file: s3://{RAW_BUCKET}/{key}")
-        df = _read_parquet_from_s3(RAW_BUCKET, key)
 
-        df = normalize_trip_schema(df)
+# --------------------------------------------------
+# Public API
+# --------------------------------------------------
+def build_master_table(stations: pl.DataFrame, missing_months: bool = True) -> None:
+    """
+    Build (or update) the partitioned master trips table and station dimension.
 
-        df = df.filter(pl.col("start_time").is_not_null())
+    Handles:
+    - Monthly files: YYYYMM.(csv|parquet)
+    - Yearly bulk files: YYYY.(parquet)
 
-        df = df.with_columns(
-            [
-                pl.col("start_time").dt.year().alias("year"),
-                pl.col("start_time").dt.month().alias("month"),
-            ]
+    All data are written as monthly partitions:
+      master/trips/year=YYYY/month=MM/part.parquet
+    """
+
+    raw_keys = [
+        k
+        for k in _list_keys(RAW_BUCKET, RAW_PREFIX)
+        if k.endswith((".csv", ".parquet"))
+    ]
+
+    # --------------------------------------------
+    # Determine file type from filename
+    # --------------------------------------------
+    def _key_kind(key: str) -> tuple[str, int | None, int | None]:
+        """
+        Returns:
+          ("monthly", year, month)
+          ("bulk", year, None)
+          ("ignore", None, None)
+        """
+        name = key.split("/")[-1]
+        stem = name.replace(".csv", "").replace(".parquet", "")
+
+        if stem.isdigit() and len(stem) == 6:
+            return "monthly", int(stem[:4]), int(stem[4:6])
+
+        if stem.isdigit() and len(stem) == 4:
+            return "bulk", int(stem), None
+
+        return "ignore", None, None
+
+    already = _existing_master_partitions() if missing_months else set()
+
+    # --------------------------------------------
+    # Process each raw file
+    # --------------------------------------------
+    for key in sorted(raw_keys):
+        kind, year, month = _key_kind(key)
+
+        if kind == "ignore":
+            continue
+
+        s3_path = f"s3://{RAW_BUCKET}/{key}"
+        print(f"Processing {s3_path}")
+
+        df_raw = (
+            pl.read_parquet(s3_path)
+            if key.endswith(".parquet")
+            else pl.read_csv(s3_path, ignore_errors=True)
         )
 
-        if missing_months:
-            year_month_filters = [
-                (pl.col("year") == y) & (pl.col("month") == m)
-                for (y, m) in candidate_months
-            ]
+        df = normalize_trip_schema(df_raw, stations)
 
-            df = df.filter(pl.any_horizontal(year_month_filters))
-
-        # Drop any station cols before join (station table is authoritative)
-        df = df.drop(
-            [
-                "start_station_name",
-                "start_lat",
-                "start_lng",
-                "end_station_name",
-                "end_lat",
-                "end_lng",
-            ]
-        )
-
-        df = df.join(stations_start, on="start_station_id", how="left")
-        df = df.join(stations_end, on="end_station_id", how="left")
-
-        parts = df.partition_by(["year", "month"], maintain_order=False)
-
-        for part in parts:
-            if part.height == 0:
+        # ----------------------------------------
+        # Monthly file (YYYYMM)
+        # ----------------------------------------
+        if kind == "monthly":
+            if missing_months and (year, month) in already:
+                print(f"Skipping existing {year}-{month:02d}")
                 continue
 
-            year = int(part["year"][0])
-            month = int(part["month"][0])
-
-            part = part.drop(["year", "month"])
-
-            base_name = os.path.splitext(os.path.basename(key))[0]
-            out_key = (
-                f"{TRIPS_PREFIX}/year={year:04d}/month={month:02d}/{base_name}.parquet"
+            out_uri = (
+                f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/"
+                f"year={year}/month={month}/part.parquet"
             )
 
-            print(
-                f"  → Writing s3://{PROC_BUCKET}/{out_key} "
-                f"(rows={part.height})"
+            _write_parquet_to_s3(df, out_uri)
+            print(f"Wrote {out_uri} (rows={df.height:,})")
+
+        # ----------------------------------------
+        # Yearly bulk file (YYYY) → split by month
+        # ----------------------------------------
+        else:  # kind == "bulk"
+            df = df.with_columns(
+                [
+                    pl.col("started_at").dt.year().alias("_year"),
+                    pl.col("started_at").dt.month().alias("_month"),
+                ]
             )
-            _write_parquet_to_s3(part, PROC_BUCKET, out_key)
 
-    print("Master partitioned trips table is up to date.")
+            partitions = df.partition_by(["_year", "_month"], as_dict=True)
 
+            for (y, m), subdf in sorted(partitions.items()):
+                if missing_months and (y, m) in already:
+                    print(f"Skipping existing {y}-{m:02d}")
+                    continue
 
-def main() -> None:
-    build_master_table(missing_months=True)
+                out_uri = (
+                    f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/"
+                    f"year={y}/month={m}/part.parquet"
+                )
 
+                _write_parquet_to_s3(
+                    subdf.drop(["_year", "_month"]),
+                    out_uri,
+                )
 
-if __name__ == "__main__":
-    main()
+                print(f"Wrote {out_uri} (rows={subdf.height:,})")
+
+    # --------------------------------------------
+    # Rebuild stations from authoritative master
+    # --------------------------------------------
+    print("Rebuilding station dimension from master trips...")
+
+    trips_lf = pl.scan_parquet(
+        f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/year=*/month=*/part.parquet"
+    )
+
+    stations_new = build_station_dimension(trips_lf)
+
+    _write_parquet_to_s3(
+        stations_new,
+        f"s3://{PROC_BUCKET}/{STATIONS_KEY}",
+    )
+
+    print(f"Stations written to s3://{PROC_BUCKET}/{STATIONS_KEY}")

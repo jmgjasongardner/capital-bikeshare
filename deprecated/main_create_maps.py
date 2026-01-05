@@ -3,6 +3,7 @@ import numpy as np
 import polars as pl
 from dotenv import find_dotenv, load_dotenv
 import folium
+
 # from sklearn.preprocessing import MinMaxScaler
 
 if __name__ == "__main__":
@@ -19,11 +20,7 @@ if __name__ == "__main__":
         f"s3://capital-bikeshare-manipulated/bike_stations.parquet"
     )
 
-    pre = pd.read_parquet('data/bike_number_data.parquet')
-
-
-
-
+    pre = pd.read_parquet("data/bike_number_data.parquet")
 
     data = (
         pre.groupby(["Start station number", "Start station"])
