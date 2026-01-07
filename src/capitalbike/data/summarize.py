@@ -6,6 +6,10 @@ from typing import Tuple
 
 import boto3
 import polars as pl
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 
 PROC_BUCKET = os.getenv("S3_BUCKET_PROCESSED", "capital-bikeshare-manipulated")
@@ -39,12 +43,20 @@ def _write_parquet_to_s3(df: pl.DataFrame, s3_uri: str) -> None:
 
 def _trips_scan() -> pl.LazyFrame:
     return pl.scan_parquet(
-        f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/year=*/month=*/part.parquet"
+        f"s3://{PROC_BUCKET}/{MASTER_PREFIX}/year=*/month=*/part.parquet",
+        storage_options={
+            "aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+        }
     )
 
 
 def _stations_scan() -> pl.LazyFrame:
-    return pl.scan_parquet(f"s3://{PROC_BUCKET}/{STATIONS_KEY}")
+    return pl.scan_parquet(
+        f"s3://{PROC_BUCKET}/{STATIONS_KEY}",
+        storage_options={
+            "aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+        }
+    )
 
 
 # --------------------------------------------------
@@ -103,7 +115,7 @@ def build_station_daily(sample: bool = False) -> None:
 
     # Join checkouts and returns
     base = checkouts.join(
-        returns, on=["station_id", "date"], how="outer_coalesce", coalesce=True
+        returns, on=["station_id", "date"], how="full", coalesce=True
     ).with_columns(
         [
             pl.col("num_checkouts").fill_null(0),
@@ -162,6 +174,7 @@ def build_station_hourly() -> None:
             stations.select(["station_id", "station_name", "lat", "lng"]),
             on="station_id",
             how="left",
+            coalesce=True,
         )
         .select(
             [
@@ -227,6 +240,7 @@ def build_station_routes() -> None:
         ]),
         on="start_station_id",
         how="left",
+        coalesce=True,
     )
 
     # Join end station info
@@ -240,6 +254,7 @@ def build_station_routes() -> None:
             ]),
             on="end_station_id",
             how="left",
+            coalesce=True,
         )
         .select([
             "start_station_id",

@@ -63,12 +63,21 @@ min_date = daily_df["date"].min()
 max_date = daily_df["date"].max()
 
 # --------------------------------------------------
+# Session State Initialization
+# --------------------------------------------------
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "Station Map"
+if "selected_station_name" not in st.session_state:
+    st.session_state.selected_station_name = None
+
+# --------------------------------------------------
 # Sidebar: View Mode Selector
 # --------------------------------------------------
 st.sidebar.header("View Mode")
 view_mode = st.sidebar.radio(
     "Select View",
     ["Station Map", "Station Deep Dive"],
+    key="view_mode",
     help="Choose between map overview or detailed station analysis",
 )
 
@@ -110,6 +119,30 @@ if view_mode == "Station Map":
             help="Color scheme for markers",
         )
 
+    # Advanced Filters (Member Type & Bike Type)
+    with st.expander("🔍 Advanced Filters (Member & Bike Type)", expanded=False):
+        st.info("⚠️ Applying member/bike type filters will query raw trip data and may take longer to load.")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            member_filter = st.multiselect(
+                "Member Type",
+                ["member", "casual"],
+                default=["member", "casual"],
+                help="Filter by rider membership status",
+            )
+
+        with col2:
+            rideable_filter = st.multiselect(
+                "Bike Type",
+                ["classic_bike", "electric_bike", "docked_bike"],
+                default=["classic_bike", "electric_bike", "docked_bike"],
+                help="Filter by bike type (post-2020 data only)",
+            )
+
+        use_advanced_filters = len(member_filter) < 2 or len(rideable_filter) < 3
+
     # Handle date range
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
@@ -117,47 +150,128 @@ if view_mode == "Station Map":
         start_date = end_date = date_range
 
     # Filter and aggregate daily data
-    daily_filtered = daily_df.filter(pl.col("date").is_between(start_date, end_date))
+    # If advanced filters are used, query raw trips data instead of aggregates
+    if use_advanced_filters:
+        st.spinner("Querying raw trip data with advanced filters...")
 
-    # Aggregate by station
-    if metric == "net_flow":
-        # Calculate net flow
-        station_agg = (
-            daily_filtered.group_by("station_id")
-            .agg(
-                [
-                    pl.sum("num_checkouts").alias("total_checkouts"),
-                    pl.sum("num_returns").alias("total_returns"),
-                    (pl.sum("num_checkouts") - pl.sum("num_returns")).alias("net_flow"),
-                    pl.mean("avg_duration_sec").alias("avg_duration_sec"),
-                    pl.first("station_name").alias("station_name"),
-                ]
+        @st.cache_data(ttl=3600)
+        def load_and_filter_trips(start, end, members, rideables):
+            """Load and aggregate raw trips with member/bike type filters."""
+            import polars as pl
+            import os
+
+            trips = pl.scan_parquet(
+                f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/master/trips/year=*/month=*/part.parquet",
+                storage_options={"aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1")}
             )
-            .join(
-                stations_df.select(["station_id", "lat", "lng"]),
-                on="station_id",
-                how="left",
-                coalesce=True,
+
+            # Apply filters
+            trips_filtered = trips.filter(
+                pl.col("started_at").dt.date().is_between(start, end)
             )
+
+            # Case-insensitive member type filter
+            if members:
+                member_conditions = [pl.col("member_type").str.to_lowercase() == m for m in members]
+                member_filter = member_conditions[0]
+                for cond in member_conditions[1:]:
+                    member_filter = member_filter | cond
+                trips_filtered = trips_filtered.filter(member_filter)
+
+            # Rideable type filter (handle nulls for pre-2020 data)
+            if rideables and len(rideables) < 3:
+                rideable_filter = pl.col("rideable_type").is_in(rideables)
+                trips_filtered = trips_filtered.filter(rideable_filter)
+
+            # Aggregate by start station
+            checkouts = (
+                trips_filtered
+                .group_by("start_station_id")
+                .agg([
+                    pl.len().alias("total_checkouts"),
+                    pl.col("duration_sec").mean().alias("avg_duration_sec"),
+                    pl.first("start_station_name").alias("station_name"),
+                ])
+                .rename({"start_station_id": "station_id"})
+            )
+
+            # Aggregate by end station
+            returns = (
+                trips_filtered
+                .group_by("end_station_id")
+                .agg(pl.len().alias("total_returns"))
+                .rename({"end_station_id": "station_id"})
+            )
+
+            # Join and compute net flow
+            result = (
+                checkouts.join(returns, on="station_id", how="full", coalesce=True)
+                .with_columns([
+                    pl.col("total_checkouts").fill_null(0),
+                    pl.col("total_returns").fill_null(0),
+                ])
+                .with_columns(
+                    (pl.col("total_checkouts") - pl.col("total_returns")).alias("net_flow")
+                )
+                .collect()
+            )
+
+            return result
+
+        daily_filtered = load_and_filter_trips(
+            start_date, end_date, member_filter, rideable_filter
+        )
+
+        # Join with station coordinates
+        station_agg = daily_filtered.join(
+            stations_df.select(["station_id", "lat", "lng"]),
+            on="station_id",
+            how="left",
+            coalesce=True
         )
     else:
-        station_agg = (
-            daily_filtered.group_by("station_id")
-            .agg(
-                [
-                    pl.sum("num_checkouts").alias("total_checkouts"),
-                    pl.sum("num_returns").alias("total_returns"),
-                    pl.mean("avg_duration_sec").alias("avg_duration_sec"),
-                    pl.first("station_name").alias("station_name"),
-                ]
+        # Use pre-aggregated data (faster)
+        daily_filtered = daily_df.filter(pl.col("date").is_between(start_date, end_date))
+
+        # Aggregate by station
+        if metric == "net_flow":
+            # Calculate net flow
+            station_agg = (
+                daily_filtered.group_by("station_id")
+                .agg(
+                    [
+                        pl.sum("num_checkouts").alias("total_checkouts"),
+                        pl.sum("num_returns").alias("total_returns"),
+                        (pl.sum("num_checkouts") - pl.sum("num_returns")).alias("net_flow"),
+                        pl.mean("avg_duration_sec").alias("avg_duration_sec"),
+                        pl.first("station_name").alias("station_name"),
+                    ]
+                )
+                .join(
+                    stations_df.select(["station_id", "lat", "lng"]),
+                    on="station_id",
+                    how="left",
+                    coalesce=True,
+                )
             )
-            .join(
-                stations_df.select(["station_id", "lat", "lng"]),
-                on="station_id",
-                how="left",
-                coalesce=True,
+        else:
+            station_agg = (
+                daily_filtered.group_by("station_id")
+                .agg(
+                    [
+                        pl.sum("num_checkouts").alias("total_checkouts"),
+                        pl.sum("num_returns").alias("total_returns"),
+                        pl.mean("avg_duration_sec").alias("avg_duration_sec"),
+                        pl.first("station_name").alias("station_name"),
+                    ]
+                )
+                .join(
+                    stations_df.select(["station_id", "lat", "lng"]),
+                    on="station_id",
+                    how="left",
+                    coalesce=True,
+                )
             )
-        )
 
     # Display station count
     st.info(f"Showing {len(station_agg):,} stations")
@@ -173,8 +287,14 @@ if view_mode == "Station Map":
             use_clustering=use_clustering,
         )
 
-        # Key parameter prevents continuous reruns when map is interacted with
-        st_folium(folium_map, width=1200, height=600, key="station_map", returned_objects=[])
+        # Render map without capturing interactions to prevent continuous reloads
+        st_folium(
+            folium_map,
+            width=1200,
+            height=600,
+            key="station_map",
+            returned_objects=[],
+        )
     else:
         st.warning("No station data available for the selected date range.")
 
@@ -184,14 +304,45 @@ if view_mode == "Station Map":
 else:
     st.subheader("Station Deep Dive")
 
-    # Station selector
-    station_list = sorted(stations_df["station_name"].unique().to_list())
+    # Filters for station selection
+    col1, col2 = st.columns([3, 1])
 
-    selected_station_name = st.selectbox(
-        "Select Station",
-        station_list,
-        help="Choose a station to analyze in detail",
-    )
+    with col2:
+        # Zip code filter (if geocoding data is available)
+        if "zip_code" in stations_df.columns:
+            zip_codes = sorted([z for z in stations_df["zip_code"].unique().to_list() if z and z != "Unknown"])
+            selected_zip = st.selectbox(
+                "Filter by Zip Code",
+                ["All"] + zip_codes,
+                help="Filter stations by zip code",
+            )
+
+            if selected_zip != "All":
+                filtered_stations = stations_df.filter(pl.col("zip_code") == selected_zip)
+            else:
+                filtered_stations = stations_df
+        else:
+            filtered_stations = stations_df
+            selected_zip = "All"
+
+    with col1:
+        # Station selector
+        station_list = sorted(filtered_stations["station_name"].unique().to_list())
+
+        # Use session state for default selection if available
+        default_index = 0
+        if st.session_state.selected_station_name and st.session_state.selected_station_name in station_list:
+            default_index = station_list.index(st.session_state.selected_station_name)
+
+        selected_station_name = st.selectbox(
+            "Select Station",
+            station_list,
+            index=default_index,
+            help="Choose a station to analyze in detail",
+        )
+
+        # Update session state when user changes selection
+        st.session_state.selected_station_name = selected_station_name
 
     # Get station metadata
     station_info = stations_df.filter(pl.col("station_name") == selected_station_name)
@@ -272,9 +423,16 @@ else:
                 discontinued_date = str(last_seen).split(' ')[0]
             status_str = f"**Status**: 🔴 Discontinued {discontinued_date}"
 
+        # Get geocoding info if available
+        city = station_info["city"][0] if "city" in station_info.columns else "Unknown"
+        state = station_info["state"][0] if "state" in station_info.columns else "Unknown"
+        zip_code = station_info["zip_code"][0] if "zip_code" in station_info.columns else "Unknown"
+
         st.markdown(
             f"""
             **Location**: {station_lat:.6f}, {station_lng:.6f}
+
+            **Address**: {city}, {state} {zip_code}
 
             **First Observed**: {first_seen_str}
 
@@ -325,19 +483,75 @@ else:
     # Tab 3: Popular Routes
     # --------------------------------------------------
     with tab3:
-        st.markdown("### Popular Destinations")
+        st.markdown("### Popular Routes")
 
         if routes_df is not None:
-            # Filter routes starting from this station
-            station_routes = routes_df.filter(
-                pl.col("start_station_id") == station_id
-            ).sort("trip_count", descending=True)
+            # Direction selector
+            route_direction = st.radio(
+                "Route Direction",
+                ["Outbound (From This Station)", "Inbound (To This Station)"],
+                horizontal=True,
+                help="Outbound shows where people go FROM this station. Inbound shows where people come FROM to reach this station."
+            )
+
+            is_outbound = route_direction.startswith("Outbound")
+
+            if is_outbound:
+                # Filter routes starting from this station
+                station_routes = routes_df.filter(
+                    pl.col("start_station_id") == station_id
+                ).sort("trip_count", descending=True)
+
+                header_text = "Top 10 Destinations"
+                other_station_col = "end_station_name"
+                origin_name = selected_station_name
+                origin_lat_val = station_lat
+                origin_lng_val = station_lng
+            else:
+                # Filter routes ending at this station
+                station_routes = routes_df.filter(
+                    pl.col("end_station_id") == station_id
+                ).sort("trip_count", descending=True)
+
+                # For inbound, we need to create a modified dataframe that swaps columns
+                # so the visualization code works correctly
+                station_routes = station_routes.select([
+                    pl.col("start_station_id").alias("temp_start_id"),
+                    pl.col("start_station_name").alias("end_station_name"),  # Origins become "destinations" in the chart
+                    pl.col("start_lat").alias("temp_start_lat"),
+                    pl.col("start_lng").alias("temp_start_lng"),
+                    pl.col("end_station_id").alias("temp_end_id"),
+                    pl.col("end_station_name").alias("temp_end_name"),
+                    pl.col("end_lat").alias("temp_end_lat"),
+                    pl.col("end_lng").alias("temp_end_lng"),
+                    pl.col("trip_count"),
+                    pl.col("avg_duration_sec"),
+                ]).select([
+                    pl.col("temp_end_id").alias("start_station_id"),
+                    pl.col("temp_end_name").alias("start_station_name"),
+                    pl.col("temp_end_lat").alias("start_lat"),
+                    pl.col("temp_end_lng").alias("start_lng"),
+                    pl.col("temp_start_id").alias("end_station_id"),
+                    pl.col("end_station_name"),
+                    pl.col("temp_start_lat").alias("end_lat"),
+                    pl.col("temp_start_lng").alias("end_lng"),
+                    pl.col("trip_count"),
+                    pl.col("avg_duration_sec"),
+                ])
+
+                header_text = "Top 10 Origins"
+                other_station_col = "end_station_name"
+                origin_name = selected_station_name
+                origin_lat_val = station_lat
+                origin_lng_val = station_lng
 
             if len(station_routes) > 0:
                 # Bar chart
-                st.markdown("#### Top 10 Destinations")
+                st.markdown(f"#### {header_text}")
+
+                chart_title = f"Top 10 {'Destinations from' if is_outbound else 'Origins to'} {selected_station_name}"
                 fig = create_top_routes_bar(
-                    station_routes, selected_station_name, top_n=10
+                    station_routes, chart_title, top_n=10, is_outbound=is_outbound
                 )
                 st.plotly_chart(fig, width='stretch')
 
@@ -346,13 +560,13 @@ else:
                 route_map = create_route_map(
                     station_routes,
                     origin_station_name=selected_station_name,
-                    origin_lat=station_lat,
-                    origin_lng=station_lng,
+                    origin_lat=origin_lat_val,
+                    origin_lng=origin_lng_val,
                     top_n=10,
                 )
                 st_folium(route_map, width=1200, height=500, key="route_map", returned_objects=[])
             else:
-                st.info("No route data available for this station.")
+                st.info(f"No {'outbound' if is_outbound else 'inbound'} route data available for this station.")
         else:
             st.warning(
                 "Route data not yet available. Run `build_station_routes()` to generate this aggregate."

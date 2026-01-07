@@ -178,14 +178,15 @@ def create_flow_chart(daily_df: pl.DataFrame, station_name: str) -> go.Figure:
     return fig
 
 
-def create_top_routes_bar(routes_df: pl.DataFrame, station_name: str, top_n: int = 10) -> go.Figure:
+def create_top_routes_bar(routes_df: pl.DataFrame, chart_title: str, top_n: int = 10, is_outbound: bool = True) -> go.Figure:
     """
-    Create a horizontal bar chart showing top destination stations.
+    Create a horizontal bar chart showing top destination or origin stations.
 
     Args:
         routes_df: DataFrame with columns: end_station_name, trip_count
-        station_name: Origin station name
+        chart_title: Title for the chart
         top_n: Number of top routes to show
+        is_outbound: True for destinations (outbound), False for origins (inbound)
 
     Returns:
         Plotly Figure object
@@ -210,7 +211,7 @@ def create_top_routes_bar(routes_df: pl.DataFrame, station_name: str, top_n: int
     )
 
     fig.update_layout(
-        title=f"Top {top_n} Destinations from {station_name}",
+        title=chart_title,
         xaxis_title="Number of Trips",
         yaxis_title="",
         height=400,
