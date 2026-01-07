@@ -28,13 +28,38 @@ def download_month_zip(year_month: str) -> BytesIO:
 
 
 def extract_first_csv_from_zip(zip_buf: BytesIO) -> BytesIO:
+    """
+    Extract CSV data from ZIP file.
+
+    For multi-CSV ZIPs (e.g., 2017 with Q1, Q2, Q3, Q4 files),
+    this concatenates all CSV files together.
+    """
     zip_buf.seek(0)
     with zipfile.ZipFile(zip_buf, "r") as zf:
         names = zf.namelist()
         csv_names = [n for n in names if n.lower().endswith(".csv")]
-        target = csv_names[0] if csv_names else names[0]
-        with zf.open(target) as f:
-            return BytesIO(f.read())
+
+        if not csv_names:
+            # Fallback to first file if no CSVs found
+            target = names[0]
+            with zf.open(target) as f:
+                return BytesIO(f.read())
+
+        # Read ALL CSV files and concatenate them
+        dfs = []
+        for csv_name in csv_names:
+            with zf.open(csv_name) as f:
+                df = pd.read_csv(BytesIO(f.read()))
+                dfs.append(df)
+
+        # Concatenate all dataframes
+        combined_df = pd.concat(dfs, ignore_index=True)
+
+        # Convert back to BytesIO CSV
+        csv_buf = BytesIO()
+        combined_df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        return csv_buf
 
 
 def month_to_key(year_month: str) -> str:

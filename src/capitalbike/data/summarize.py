@@ -75,16 +75,37 @@ def build_station_daily(sample: bool = False) -> None:
     trips = _trips_scan()
     stations = _stations_scan()
 
-    base = (
+    # Aggregate checkouts (trips starting from this station)
+    checkouts = (
         trips.with_columns(pl.col("started_at").dt.date().alias("date"))
         .group_by(["start_station_id", "date"])
         .agg(
             [
                 pl.len().alias("num_checkouts"),
                 pl.col("duration_sec").mean().alias("avg_duration_sec"),
+                pl.col("bike_number").n_unique().alias("distinct_bikes_out"),
             ]
         )
         .rename({"start_station_id": "station_id"})
+    )
+
+    # Aggregate returns (trips ending at this station)
+    returns = (
+        trips.with_columns(pl.col("started_at").dt.date().alias("date"))
+        .group_by(["end_station_id", "date"])
+        .agg(pl.len().alias("num_returns"))
+        .rename({"end_station_id": "station_id"})
+    )
+
+    # Join checkouts and returns
+    base = checkouts.join(
+        returns, on=["station_id", "date"], how="outer_coalesce", coalesce=True
+    ).with_columns(
+        [
+            pl.col("num_checkouts").fill_null(0),
+            pl.col("num_returns").fill_null(0),
+            (pl.col("num_checkouts") - pl.col("num_returns")).alias("net_flow"),
+        ]
     )
 
     out = (
@@ -98,6 +119,9 @@ def build_station_daily(sample: bool = False) -> None:
                 "lng",
                 "num_checkouts",
                 "avg_duration_sec",
+                "distinct_bikes_out",
+                "num_returns",
+                "net_flow",
             ]
         )
         .sort(["date", "station_id"])
@@ -155,11 +179,107 @@ def build_station_hourly() -> None:
     print(f"Station_hourly written to {out_uri}")
 
 
+def build_station_routes() -> None:
+    """
+    Build popular routes aggregate showing top station-to-station pairs.
+
+    This creates a lightweight aggregate of the most popular routes for
+    the "Popular Routes" feature in the StationExplorer page.
+    """
+    trips = _trips_scan()
+    stations = _stations_scan()
+
+    print("Aggregating routes by start/end station pairs...")
+
+    # Aggregate trips by start/end station pair
+    routes = (
+        trips.group_by(["start_station_id", "end_station_id"])
+        .agg(
+            [
+                pl.len().alias("trip_count"),
+                pl.col("duration_sec").mean().alias("avg_duration_sec"),
+            ]
+        )
+        .filter(
+            # Filter out round trips (same start/end)
+            (pl.col("start_station_id") != pl.col("end_station_id"))
+            &
+            # Filter noise (require at least 10 trips)
+            (pl.col("trip_count") >= 10)
+        )
+        .sort("trip_count", descending=True)
+        .head(10_000)  # Keep top 10K routes only
+    )
+
+    print("Joining station metadata...")
+
+    # Join start station info
+    routes_with_start = routes.join(
+        stations.select([
+            pl.col("station_id").alias("start_station_id"),
+            pl.col("station_name").alias("start_station_name"),
+            pl.col("lat").alias("start_lat"),
+            pl.col("lng").alias("start_lng"),
+        ]),
+        on="start_station_id",
+        how="left",
+    )
+
+    # Join end station info
+    out = (
+        routes_with_start.join(
+            stations.select([
+                pl.col("station_id").alias("end_station_id"),
+                pl.col("station_name").alias("end_station_name"),
+                pl.col("lat").alias("end_lat"),
+                pl.col("lng").alias("end_lng"),
+            ]),
+            on="end_station_id",
+            how="left",
+        )
+        .select([
+            "start_station_id",
+            "start_station_name",
+            "start_lat",
+            "start_lng",
+            "end_station_id",
+            "end_station_name",
+            "end_lat",
+            "end_lng",
+            "trip_count",
+            "avg_duration_sec",
+        ])
+        .sort("trip_count", descending=True)
+        .collect()
+    )
+
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/station_routes.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    print(f"Station_routes written to {out_uri} ({len(out):,} routes)")
+
+
 def build_all_summaries() -> None:
+    """Build all summary/aggregate tables from master trips data."""
+    print("Building all summary tables...")
+    print("=" * 60)
+
     build_system_daily()
+    print()
+
     build_station_daily(sample=False)
-    build_station_daily(sample=False)
+    print()
+
+    build_station_daily(sample=True)
+    print()
+
     build_station_hourly()
+    print()
+
+    build_station_routes()
+    print()
+
+    print("=" * 60)
+    print("All summaries built successfully!")
 
 
 if __name__ == "__main__":

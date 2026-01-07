@@ -63,6 +63,8 @@ dependencies = [
     "yarl~=1.9.4",
     "zipfile36~=0.1.3",
     "streamlit>=1.52.2",
+    "streamlit-folium>=0.15.0",
+    "plotly>=5.18.0",
     "watchdog>=6.0.0",
     "black>=25.12.0",
 ]
