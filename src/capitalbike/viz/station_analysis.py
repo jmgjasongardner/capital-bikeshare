@@ -14,7 +14,7 @@ WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 HOUR_LABELS = [f"{h:02d}:00" for h in range(24)]
 
 
-def create_hourly_heatmap(hourly_df: pl.DataFrame, station_name: str) -> go.Figure:
+def create_hourly_heatmap(hourly_df: pl.DataFrame, station_name: str, metric_name: str = "Checkouts") -> go.Figure:
     """
     Create a heatmap showing demand patterns by hour of day and day of week.
 
@@ -64,7 +64,7 @@ def create_hourly_heatmap(hourly_df: pl.DataFrame, station_name: str) -> go.Figu
     )
 
     fig.update_layout(
-        title=f"{station_name}: Hourly Demand Pattern",
+        title=f"{station_name}: Hourly {metric_name} Pattern",
         xaxis_title="Day of Week",
         yaxis_title="Hour of Day",
         height=600,

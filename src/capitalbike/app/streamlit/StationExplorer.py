@@ -137,6 +137,7 @@ if view_mode == "Station Map":
                 stations_df.select(["station_id", "lat", "lng"]),
                 on="station_id",
                 how="left",
+                coalesce=True,
             )
         )
     else:
@@ -154,6 +155,7 @@ if view_mode == "Station Map":
                 stations_df.select(["station_id", "lat", "lng"]),
                 on="station_id",
                 how="left",
+                coalesce=True,
             )
         )
 
@@ -219,12 +221,21 @@ else:
         # Calculate overview metrics
         metrics = create_station_overview_metrics(station_daily)
 
+        # Calculate trip breakdown
+        total_checkouts = station_daily["num_checkouts"].sum()
+        total_returns = station_daily["num_returns"].sum() if "num_returns" in station_daily.columns else total_checkouts
+        total_net_flow = total_checkouts - total_returns
+
         # Display metrics
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Trips", f"{metrics['total_trips']:,}")
-        col2.metric("Avg Duration", f"{metrics['avg_duration_min']:.1f} min")
-        col3.metric("Active Days", f"{metrics['active_days']:,}")
-        col4.metric("Avg Daily Trips", f"{metrics['avg_daily_trips']:.0f}")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Checkouts", f"{total_checkouts:,}")
+        col2.metric("Total Returns", f"{total_returns:,}")
+        col3.metric("Net Flow", f"{total_net_flow:+,}", help="Positive = more checkouts, Negative = more returns")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Avg Duration", f"{metrics['avg_duration_min']:.1f} min")
+        col2.metric("Active Days", f"{metrics['active_days']:,}")
+        col3.metric("Avg Daily Trips", f"{metrics['avg_daily_trips']:.0f}")
 
         # Station info
         first_seen = station_info['earliest_seen'][0]
@@ -236,10 +247,30 @@ else:
         else:
             first_seen_str = str(first_seen).split(' ')[0]
 
-        if hasattr(last_seen, 'strftime'):
-            last_seen_str = last_seen.strftime('%Y-%m-%d')
+        # Determine if station is currently active
+        # If last seen is within the last month of available data, consider it active
+        from datetime import datetime, timedelta
+
+        # Get the most recent date in the dataset
+        most_recent_date = max_date
+
+        # Calculate one month ago from most recent date
+        one_month_ago = most_recent_date - timedelta(days=30)
+
+        # Determine status
+        if hasattr(last_seen, 'date'):
+            last_seen_date = last_seen.date()
         else:
-            last_seen_str = str(last_seen).split(' ')[0]
+            last_seen_date = last_seen
+
+        if last_seen_date >= one_month_ago:
+            status_str = "**Status**: 🟢 Currently Active"
+        else:
+            if hasattr(last_seen, 'strftime'):
+                discontinued_date = last_seen.strftime('%Y-%m-%d')
+            else:
+                discontinued_date = str(last_seen).split(' ')[0]
+            status_str = f"**Status**: 🔴 Discontinued {discontinued_date}"
 
         st.markdown(
             f"""
@@ -247,7 +278,7 @@ else:
 
             **First Observed**: {first_seen_str}
 
-            **Last Observed**: {last_seen_str}
+            {status_str}
             """
         )
 
@@ -264,12 +295,23 @@ else:
     # --------------------------------------------------
     with tab2:
         st.markdown("### Hourly Demand Pattern")
+
+        # Metric selector for heatmap
+        heatmap_metric = st.selectbox(
+            "Select Metric",
+            ["Checkouts", "Returns", "Net Flow"],
+            key="heatmap_metric",
+            help="Choose which metric to visualize in the heatmap"
+        )
+
         st.markdown(
-            "This heatmap shows the average number of checkouts by hour of day and day of week."
+            f"This heatmap shows the average number of **{heatmap_metric.lower()}** by hour of day and day of week."
         )
 
         if len(station_hourly) > 0:
-            fig = create_hourly_heatmap(station_hourly, selected_station_name)
+            # The station_hourly data only has checkouts currently
+            # We'll need to enhance this once we add hourly returns data
+            fig = create_hourly_heatmap(station_hourly, selected_station_name, metric_name=heatmap_metric)
             st.plotly_chart(fig, width='stretch')
 
             st.info(

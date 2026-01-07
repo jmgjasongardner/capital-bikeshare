@@ -54,7 +54,9 @@ def build_system_daily() -> None:
     trips = _trips_scan()
 
     out = (
-        trips.with_columns(pl.col("started_at").dt.date().alias("date"))
+        trips
+        .filter(pl.col("duration_sec") > 0)  # Filter out negative/zero durations
+        .with_columns(pl.col("started_at").dt.date().alias("date"))
         .group_by("date")
         .agg(
             [
@@ -77,7 +79,9 @@ def build_station_daily(sample: bool = False) -> None:
 
     # Aggregate checkouts (trips starting from this station)
     checkouts = (
-        trips.with_columns(pl.col("started_at").dt.date().alias("date"))
+        trips
+        .filter(pl.col("duration_sec") > 0)  # Filter out negative/zero durations
+        .with_columns(pl.col("started_at").dt.date().alias("date"))
         .group_by(["start_station_id", "date"])
         .agg(
             [
@@ -109,7 +113,7 @@ def build_station_daily(sample: bool = False) -> None:
     )
 
     out = (
-        base.join(stations, on="station_id", how="left")
+        base.join(stations, on="station_id", how="left", coalesce=True)
         .select(
             [
                 "date",
