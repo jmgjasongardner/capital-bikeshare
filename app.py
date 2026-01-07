@@ -18,12 +18,13 @@ st.sidebar.title("🚲 Capital Bikeshare")
 st.sidebar.caption("Monthly-updated system analytics")
 
 # --------------------------------------------------
-# Page registry
+# Page registry - Updated for new pages/ structure
 # --------------------------------------------------
 PAGES = {
     "Home": "Home",
-    "Bike Journeys": "BikeJourneys",
-    "Station Explorer": "StationExplorer",
+    "Station Explorer": "pages/1_Station_Explorer",
+    "Trip Analytics": "pages/2_Trip_Analytics",
+    "Station Table": "pages/3_Station_Table",
 }
 
 selection = st.sidebar.radio("Go to", list(PAGES.keys()))
