@@ -255,7 +255,7 @@ with tab1:
                 pl.col("trip_count").alias("Total Trips"),
                 (pl.col("avg_duration_sec") / 60).round(1).alias("Avg Duration (min)"),
             ])
-            st.dataframe(display_df.to_pandas(), use_container_width=True, height=400)
+            st.dataframe(display_df.to_pandas(), width='stretch', height=400)
     else:
         st.warning("No route data available for the selected filters.")
 
@@ -494,7 +494,7 @@ with tab4:
             pl.col("member_type").alias("Member Type"),
         ])
 
-        st.dataframe(longest_display.to_pandas(), use_container_width=True)
+        st.dataframe(longest_display.to_pandas(), width='stretch')
 
         # Shortest trips (but > 1 min to filter out errors)
         st.markdown("#### ⚡ Shortest Trips (> 1 minute)")
@@ -512,7 +512,7 @@ with tab4:
             pl.col("member_type").alias("Member Type"),
         ])
 
-        st.dataframe(shortest_display.to_pandas(), use_container_width=True)
+        st.dataframe(shortest_display.to_pandas(), width='stretch')
 
         # Statistics
         st.markdown("---")

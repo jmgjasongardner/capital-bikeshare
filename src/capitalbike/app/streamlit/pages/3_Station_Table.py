@@ -297,7 +297,7 @@ display_pandas = display_df.to_pandas()
 # Display using st.dataframe with column configuration
 st.dataframe(
     display_pandas,
-    use_container_width=True,
+    width='stretch',
     height=600,
     column_config={
         "Status": st.column_config.TextColumn(
