@@ -71,3 +71,5 @@ htmlcov/
 # R scratch work
 .Renviron
 .Rhistory
+
+*.txt

@@ -21,6 +21,7 @@ def create_station_map(
     color_scheme: str = "YlOrRd",
     zoom_start: int = DEFAULT_ZOOM,
     use_clustering: bool = False,
+    tooltip_cols: dict[str, str] = None,
 ) -> folium.Map:
     """
     Create an interactive Folium map with station markers.
@@ -31,6 +32,7 @@ def create_station_map(
         color_scheme: Color scheme name (YlOrRd, Blues, Viridis, etc.)
         zoom_start: Initial zoom level
         use_clustering: Whether to use marker clustering (recommended for > 100 stations)
+        tooltip_cols: Optional dict of {column_name: label} for additional metrics in tooltip
 
     Returns:
         Folium Map object
@@ -82,14 +84,33 @@ def create_station_map(
         # Scale radius based on metric value (min 5, max 20)
         radius = _scale_radius(metric_value, vmin, vmax, min_r=5, max_r=20)
 
-        # Create tooltip
-        tooltip_text = f"<b>{station_name}</b><br>{_format_metric(metric_col)}: {metric_value:,.0f}"
+        # Build tooltip with multiple metrics
+        tooltip_parts = [f"<b>{station_name}</b>"]
+
+        # Add main metric
+        tooltip_parts.append(f"{_format_metric(metric_col)}: {metric_value:,.0f}")
+
+        # Add additional metrics if provided
+        if tooltip_cols:
+            for col, label in tooltip_cols.items():
+                if col in row:
+                    value = row[col]
+                    # Handle None/null values
+                    if value is None:
+                        tooltip_parts.append(f"{label}: N/A")
+                    # Format floats vs integers differently
+                    elif isinstance(value, float):
+                        tooltip_parts.append(f"{label}: {value:,.1f}")
+                    else:
+                        tooltip_parts.append(f"{label}: {value:,}")
+
+        tooltip_text = "<br>".join(tooltip_parts)
 
         # Add circle marker
         folium.CircleMarker(
             location=[lat, lng],
             radius=radius,
-            popup=folium.Popup(tooltip_text, max_width=250),
+            popup=folium.Popup(tooltip_text, max_width=300),
             tooltip=tooltip_text,
             color=color,
             fill=True,

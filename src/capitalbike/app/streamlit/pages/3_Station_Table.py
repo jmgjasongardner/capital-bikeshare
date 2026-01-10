@@ -33,8 +33,21 @@ def load_station_daily():
     )
 
 
+@st.cache_data(ttl=3600)
+def load_station_daily_detailed():
+    """Load detailed station daily metrics with member/bike type dimensions."""
+    try:
+        return read_parquet_from_s3(
+            f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_daily_detailed.parquet"
+        )
+    except Exception:
+        # Fallback: Return None if file doesn't exist yet
+        return None
+
+
 stations_df = load_stations()
 daily_df = load_station_daily()
+detailed_df = load_station_daily_detailed()
 
 # Get date range for filters
 min_date = daily_df["date"].min()
@@ -129,6 +142,57 @@ station_metrics = (
     )
 )
 
+# Calculate electric bike percentages (post-2020 data only)
+# Only calculate if detailed data is available
+if detailed_df is not None:
+    detailed_filtered = detailed_df.filter(pl.col("date").is_between(start_date, end_date))
+
+    electric_metrics = (
+        detailed_filtered.filter(
+            (pl.col("rideable_type").is_not_null()) &
+            (pl.col("rideable_type") != "unknown")
+        )
+        .group_by("station_id")
+        .agg([
+            # Electric checkouts
+            pl.sum(
+                pl.when(pl.col("rideable_type") == "electric_bike")
+                .then(pl.col("num_checkouts"))
+                .otherwise(0)
+            ).alias("electric_checkouts"),
+            pl.sum("num_checkouts").alias("total_checkouts_with_type"),
+
+            # Electric returns
+            pl.sum(
+                pl.when(pl.col("rideable_type") == "electric_bike")
+                .then(pl.col("num_returns"))
+                .otherwise(0)
+            ).alias("electric_returns"),
+            pl.sum("num_returns").alias("total_returns_with_type"),
+        ])
+        .with_columns([
+            (pl.col("electric_checkouts") / pl.col("total_checkouts_with_type") * 100)
+                .alias("pct_checkouts_electric"),
+            (pl.col("electric_returns") / pl.col("total_returns_with_type") * 100)
+                .alias("pct_returns_electric"),
+        ])
+        .select(["station_id", "pct_checkouts_electric", "pct_returns_electric"])
+    )
+
+    # Join electric metrics with station metrics
+    station_metrics = station_metrics.join(
+        electric_metrics, on="station_id", how="left", coalesce=True
+    ).with_columns([
+        pl.col("pct_checkouts_electric").fill_null(0),
+        pl.col("pct_returns_electric").fill_null(0),
+    ])
+else:
+    # Fallback: Add zero-filled electric bike percentage columns
+    station_metrics = station_metrics.with_columns([
+        pl.lit(0.0).alias("pct_checkouts_electric"),
+        pl.lit(0.0).alias("pct_returns_electric"),
+    ])
+
 # Join with station metadata
 # Conditionally include geocoding columns if they exist
 select_cols = [
@@ -144,6 +208,8 @@ select_cols = [
     "net_flow",
     "avg_duration_min",
     "total_distinct_bikes",
+    "pct_checkouts_electric",
+    "pct_returns_electric",
 ]
 
 if "city" in stations_df.columns:
@@ -232,6 +298,8 @@ with col1:
             "net_flow",
             "avg_duration_min",
             "total_distinct_bikes",
+            "pct_checkouts_electric",
+            "pct_returns_electric",
             "earliest_seen",
             "latest_seen",
         ],
@@ -244,6 +312,8 @@ with col1:
             "net_flow": "Net Flow",
             "avg_duration_min": "Avg Duration (min)",
             "total_distinct_bikes": "Distinct Bikes",
+            "pct_checkouts_electric": "Electric Checkout %",
+            "pct_returns_electric": "Electric Return %",
             "earliest_seen": "First Seen",
             "latest_seen": "Last Seen",
         }[x],
@@ -285,6 +355,8 @@ display_cols.extend([
     pl.col("net_flow").cast(pl.Int64).alias("Net Flow"),
     pl.col("avg_duration_min").round(1).alias("Avg Duration (min)"),
     pl.col("total_distinct_bikes").cast(pl.Int64).alias("Distinct Bikes"),
+    pl.col("pct_checkouts_electric").round(1).alias("Electric Checkout (%)"),
+    pl.col("pct_returns_electric").round(1).alias("Electric Return (%)"),
     pl.col("earliest_seen").alias("First Seen"),
     pl.col("latest_seen").alias("Last Seen"),
 ])
