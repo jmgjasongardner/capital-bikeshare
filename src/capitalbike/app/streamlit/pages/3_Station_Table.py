@@ -154,21 +154,21 @@ if detailed_df is not None:
         )
         .group_by("station_id")
         .agg([
-            # Electric checkouts
-            pl.sum(
-                pl.when(pl.col("rideable_type") == "electric_bike")
+            # Electric checkouts - use expression sum() method instead of pl.sum()
+            pl.when(pl.col("rideable_type") == "electric_bike")
                 .then(pl.col("num_checkouts"))
                 .otherwise(0)
-            ).alias("electric_checkouts"),
-            pl.sum("num_checkouts").alias("total_checkouts_with_type"),
+                .sum()
+                .alias("electric_checkouts"),
+            pl.col("num_checkouts").sum().alias("total_checkouts_with_type"),
 
-            # Electric returns
-            pl.sum(
-                pl.when(pl.col("rideable_type") == "electric_bike")
+            # Electric returns - use expression sum() method instead of pl.sum()
+            pl.when(pl.col("rideable_type") == "electric_bike")
                 .then(pl.col("num_returns"))
                 .otherwise(0)
-            ).alias("electric_returns"),
-            pl.sum("num_returns").alias("total_returns_with_type"),
+                .sum()
+                .alias("electric_returns"),
+            pl.col("num_returns").sum().alias("total_returns_with_type"),
         ])
         .with_columns([
             (pl.col("electric_checkouts") / pl.col("total_checkouts_with_type") * 100)
