@@ -289,36 +289,14 @@ if view_mode == "Station Map":
 
     # Render map if available
     if folium_map is not None:
-        # Render map with click detection enabled
-        map_output = st_folium(
+        # Render map (no click tracking for instant zoom/pan)
+        st_folium(
             folium_map,
             width=1200,
             height=600,
             key="station_map",
-            returned_objects=["last_object_clicked"],
+            returned_objects=[],
         )
-
-        # Handle station click for deep dive navigation
-        if map_output and map_output.get("last_object_clicked"):
-            clicked_lat = map_output["last_object_clicked"].get("lat")
-            clicked_lng = map_output["last_object_clicked"].get("lng")
-
-            if clicked_lat and clicked_lng:
-                # Find station by coordinates (rounded to avoid floating point precision issues)
-                clicked_station = station_agg.filter(
-                    (pl.col("lat").round(6) == round(clicked_lat, 6)) &
-                    (pl.col("lng").round(6) == round(clicked_lng, 6))
-                )
-
-                if len(clicked_station) > 0:
-                    clicked_station_name = clicked_station["station_name"][0]
-
-                    # Update session state to switch to Deep Dive view
-                    st.session_state.view_mode = "Station Deep Dive"
-                    st.session_state.selected_station_name = clicked_station_name
-
-                    st.success(f"🎯 Loading Deep Dive for: **{clicked_station_name}**")
-                    st.rerun()
     else:
         st.warning("No station data available for the selected date range.")
 
