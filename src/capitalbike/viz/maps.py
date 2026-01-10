@@ -203,6 +203,128 @@ def create_route_map(
     return m
 
 
+def create_system_routes_map(
+    routes_df: pl.DataFrame,
+    top_n: int = 20,
+) -> folium.Map:
+    """
+    Create a map showing popular routes across the entire system.
+
+    Unlike create_route_map which shows routes from a single origin,
+    this function displays independent routes between any station pairs.
+
+    Args:
+        routes_df: DataFrame with columns: start_station_name, end_station_name,
+                   start_lat, start_lng, end_lat, end_lng, trip_count
+        top_n: Number of top routes to display
+
+    Returns:
+        Folium Map object
+    """
+    # Calculate map center from all stations in top routes
+    top_routes = routes_df.head(top_n)
+
+    # Collect all unique coordinates
+    all_lats = []
+    all_lngs = []
+
+    for row in top_routes.iter_rows(named=True):
+        if row.get("start_lat") and row.get("start_lng"):
+            all_lats.append(row["start_lat"])
+            all_lngs.append(row["start_lng"])
+        if row.get("end_lat") and row.get("end_lng"):
+            all_lats.append(row["end_lat"])
+            all_lngs.append(row["end_lng"])
+
+    # Calculate center
+    if all_lats and all_lngs:
+        center_lat = sum(all_lats) / len(all_lats)
+        center_lng = sum(all_lngs) / len(all_lngs)
+    else:
+        # Default to DC center
+        center_lat, center_lng = 38.9072, -77.0369
+
+    # Create base map
+    m = folium.Map(
+        location=[center_lat, center_lng],
+        zoom_start=12,
+        tiles="OpenStreetMap",
+    )
+
+    # Get trip count range for color/weight scaling
+    trip_counts = top_routes["trip_count"].to_list()
+    min_trips = min(trip_counts) if trip_counts else 0
+    max_trips = max(trip_counts) if trip_counts else 1
+
+    # Create colormap from blue (low) to red (high)
+    import matplotlib.colors as mcolors
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "route_popularity", ["#3498db", "#f39c12", "#e74c3c"]
+    )
+
+    # Track unique stations to avoid duplicate markers
+    station_markers = {}
+
+    # Add lines for each route
+    for idx, row in enumerate(top_routes.iter_rows(named=True), start=1):
+        start_lat = row.get("start_lat")
+        start_lng = row.get("start_lng")
+        end_lat = row.get("end_lat")
+        end_lng = row.get("end_lng")
+        start_name = row.get("start_station_name", "Unknown")
+        end_name = row.get("end_station_name", "Unknown")
+        trip_count = row.get("trip_count", 0)
+
+        # Skip if missing coordinates
+        if not all([start_lat, start_lng, end_lat, end_lng]):
+            continue
+
+        # Calculate normalized color value (0-1)
+        if max_trips > min_trips:
+            norm_value = (trip_count - min_trips) / (max_trips - min_trips)
+        else:
+            norm_value = 0.5
+
+        # Get color from colormap
+        rgba = cmap(norm_value)
+        hex_color = mcolors.to_hex(rgba)
+
+        # Scale line weight (thicker = more popular)
+        weight = _scale_value(trip_count, min_trips, max_trips, min_val=2, max_val=6)
+
+        # Draw polyline
+        folium.PolyLine(
+            locations=[[start_lat, start_lng], [end_lat, end_lng]],
+            color=hex_color,
+            weight=weight,
+            opacity=0.7,
+            popup=f"<b>#{idx}: {start_name} → {end_name}</b><br>{trip_count:,} trips",
+            tooltip=f"#{idx}: {trip_count:,} trips",
+        ).add_to(m)
+
+        # Add station markers (only once per station)
+        for station_name, lat, lng in [
+            (start_name, start_lat, start_lng),
+            (end_name, end_lat, end_lng)
+        ]:
+            station_key = (lat, lng)
+            if station_key not in station_markers:
+                folium.CircleMarker(
+                    location=[lat, lng],
+                    radius=5,
+                    popup=f"<b>{station_name}</b>",
+                    tooltip=station_name,
+                    color="#2c3e50",
+                    fill=True,
+                    fillColor="#ecf0f1",
+                    fillOpacity=0.8,
+                    weight=2,
+                ).add_to(m)
+                station_markers[station_key] = station_name
+
+    return m
+
+
 def _get_colormap(scheme: str, vmin: float, vmax: float) -> cm.LinearColormap:
     """
     Create a Branca colormap for the given scheme and value range.

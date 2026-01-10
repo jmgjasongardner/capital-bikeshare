@@ -13,7 +13,7 @@ from datetime import timedelta
 from streamlit_folium import st_folium
 
 from src.capitalbike.app.io import read_parquet_from_s3
-from src.capitalbike.viz.maps import create_route_map
+from src.capitalbike.viz.maps import create_route_map, create_system_routes_map
 
 
 st.title("Trip Analytics")
@@ -227,24 +227,14 @@ with tab1:
             st.markdown("#### 🗺️ Route Map Visualization")
             st.markdown("Top routes visualized on the DC metro area map with color-coded popularity.")
 
-            # Create map showing top routes
-            # Get the most popular starting station from top routes
-            top_start_station = top_routes.head(1)
-            if len(top_start_station) > 0:
-                start_name = top_start_station["start_station_name"][0]
-                start_lat = top_start_station["start_lat"][0]
-                start_lng = top_start_station["start_lng"][0]
+            # Create map showing top routes across the system
+            route_map = create_system_routes_map(
+                top_routes,
+                top_n=min(top_n, 15),  # Limit to 15 routes for performance
+            )
 
-                route_map = create_route_map(
-                    top_routes,
-                    origin_station_name=start_name,
-                    origin_lat=start_lat,
-                    origin_lng=start_lng,
-                    top_n=min(top_n, 15),  # Limit to 15 routes for performance
-                )
-
-                st_folium(route_map, width=1200, height=500, key="popular_routes_map", returned_objects=[])
-                st.caption("💡 Routes are color-coded from blue (less popular) to red (most popular). Lines show the direct path between stations.")
+            st_folium(route_map, width=1200, height=500, key="popular_routes_map", returned_objects=[])
+            st.caption("💡 Routes are color-coded from blue (less popular) to red (most popular). Line thickness indicates relative popularity.")
         elif use_advanced_filters:
             st.info("💡 Route map is only available when using pre-aggregated data (no advanced filters).")
 
