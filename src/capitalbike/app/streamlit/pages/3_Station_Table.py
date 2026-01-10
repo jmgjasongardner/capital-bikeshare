@@ -333,38 +333,65 @@ station_table_sorted = station_table.sort(
 st.markdown("---")
 
 # Format the dataframe for display
-display_cols = [
-    pl.col("station_name").alias("Station Name"),
-    pl.col("status").alias("Status"),
-]
+# Build list of columns to display (strings only, build expressions later)
+display_col_names = ["station_name", "status"]
 
 # Add geocoding columns if they exist
 if "city" in station_table_sorted.columns:
-    display_cols.append(pl.col("city").alias("City"))
+    display_col_names.append("city")
 if "state" in station_table_sorted.columns:
-    display_cols.append(pl.col("state").alias("State"))
+    display_col_names.append("state")
 if "zip_code" in station_table_sorted.columns:
-    display_cols.append(pl.col("zip_code").alias("Zip Code"))
+    display_col_names.append("zip_code")
 
-display_cols.extend([
-    pl.col("lat").round(6).alias("Latitude"),
-    pl.col("lng").round(6).alias("Longitude"),
-    pl.col("total_trips").cast(pl.Int64).alias("Total Trips"),
-    pl.col("total_checkouts").cast(pl.Int64).alias("Checkouts"),
-    pl.col("total_returns").cast(pl.Int64).alias("Returns"),
-    pl.col("net_flow").cast(pl.Int64).alias("Net Flow"),
-    pl.col("avg_duration_min").round(1).alias("Avg Duration (min)"),
-    pl.col("total_distinct_bikes").cast(pl.Int64).alias("Distinct Bikes"),
-    pl.col("pct_checkouts_electric").round(1).alias("Electric Checkout (%)"),
-    pl.col("pct_returns_electric").round(1).alias("Electric Return (%)"),
-    pl.col("earliest_seen").alias("First Seen"),
-    pl.col("latest_seen").alias("Last Seen"),
+# Add remaining metric columns
+display_col_names.extend([
+    "lat", "lng", "total_trips", "total_checkouts", "total_returns",
+    "net_flow", "avg_duration_min", "total_distinct_bikes",
+    "pct_checkouts_electric", "pct_returns_electric",
+    "earliest_seen", "latest_seen"
 ])
 
-display_df = station_table_sorted.select(display_cols)
+# Convert to pandas first, then format
+display_pandas = station_table_sorted.select(display_col_names).to_pandas()
 
-# Convert to pandas for better Streamlit display
-display_pandas = display_df.to_pandas()
+# Rename columns for display
+column_rename_map = {
+    "station_name": "Station Name",
+    "status": "Status",
+    "city": "City",
+    "state": "State",
+    "zip_code": "Zip Code",
+    "lat": "Latitude",
+    "lng": "Longitude",
+    "total_trips": "Total Trips",
+    "total_checkouts": "Checkouts",
+    "total_returns": "Returns",
+    "net_flow": "Net Flow",
+    "avg_duration_min": "Avg Duration (min)",
+    "total_distinct_bikes": "Distinct Bikes",
+    "pct_checkouts_electric": "Electric Checkout (%)",
+    "pct_returns_electric": "Electric Return (%)",
+    "earliest_seen": "First Seen",
+    "latest_seen": "Last Seen",
+}
+
+# Only rename columns that exist
+display_pandas = display_pandas.rename(
+    columns={k: v for k, v in column_rename_map.items() if k in display_pandas.columns}
+)
+
+# Round numeric columns for display
+if "Latitude" in display_pandas.columns:
+    display_pandas["Latitude"] = display_pandas["Latitude"].round(6)
+if "Longitude" in display_pandas.columns:
+    display_pandas["Longitude"] = display_pandas["Longitude"].round(6)
+if "Avg Duration (min)" in display_pandas.columns:
+    display_pandas["Avg Duration (min)"] = display_pandas["Avg Duration (min)"].round(1)
+if "Electric Checkout (%)" in display_pandas.columns:
+    display_pandas["Electric Checkout (%)"] = display_pandas["Electric Checkout (%)"].round(1)
+if "Electric Return (%)" in display_pandas.columns:
+    display_pandas["Electric Return (%)"] = display_pandas["Electric Return (%)"].round(1)
 
 # Display using st.dataframe with column configuration
 st.dataframe(
