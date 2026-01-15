@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:18a1ebcb551071bfea92e3b378b1d8ad54d732bf60aa6244ee18bc6c9a7e5131"
+content_hash = "sha256:393b8e676a90b217ce70972cdd8365ac7a0553d1450a9e641c5a930655670c8b"
 
 [[metadata.targets]]
 requires_python = "==3.12.*"
@@ -631,6 +631,17 @@ files = [
 ]
 
 [[package]]
+name = "narwhals"
+version = "2.15.0"
+requires_python = ">=3.9"
+summary = "Extremely lightweight compatibility layer between dataframe libraries"
+groups = ["default"]
+files = [
+    {file = "narwhals-2.15.0-py3-none-any.whl", hash = "sha256:cbfe21ca19d260d9fd67f995ec75c44592d1f106933b03ddd375df7ac841f9d6"},
+    {file = "narwhals-2.15.0.tar.gz", hash = "sha256:a9585975b99d95084268445a1fdd881311fa26ef1caa18020d959d5b2ff9a965"},
+]
+
+[[package]]
 name = "numpy"
 version = "1.26.4"
 requires_python = ">=3.9"
@@ -725,6 +736,21 @@ groups = ["default"]
 files = [
     {file = "platformdirs-4.5.1-py3-none-any.whl", hash = "sha256:d03afa3963c806a9bed9d5125c8f4cb2fdaf74a55ab60e5d59b3fde758104d31"},
     {file = "platformdirs-4.5.1.tar.gz", hash = "sha256:61d5cdcc6065745cdd94f0f878977f8de9437be93de97c1c12f853c9c0cdcbda"},
+]
+
+[[package]]
+name = "plotly"
+version = "6.5.0"
+requires_python = ">=3.8"
+summary = "An open-source interactive data visualization library for Python"
+groups = ["default"]
+dependencies = [
+    "narwhals>=1.15.1",
+    "packaging",
+]
+files = [
+    {file = "plotly-6.5.0-py3-none-any.whl", hash = "sha256:5ac851e100367735250206788a2b1325412aa4a4917a4fe3e6f0bc5aa6f3d90a"},
+    {file = "plotly-6.5.0.tar.gz", hash = "sha256:d5d38224883fd38c1409bef7d6a8dc32b74348d39313f3c52ca998b8e447f5c8"},
 ]
 
 [[package]]
@@ -1035,6 +1061,23 @@ dependencies = [
 files = [
     {file = "streamlit-1.52.2-py3-none-any.whl", hash = "sha256:a16bb4fbc9781e173ce9dfbd8ffb189c174f148f9ca4fb8fa56423e84e193fc8"},
     {file = "streamlit-1.52.2.tar.gz", hash = "sha256:64a4dda8bc5cdd37bfd490e93bb53da35aaef946fcfc283a7980dacdf165108b"},
+]
+
+[[package]]
+name = "streamlit-folium"
+version = "0.26.0"
+requires_python = ">=3.10"
+summary = "Render Folium objects in Streamlit"
+groups = ["default"]
+dependencies = [
+    "branca",
+    "folium!=0.15.0,>=0.13",
+    "jinja2",
+    "streamlit>=1.13.0",
+]
+files = [
+    {file = "streamlit_folium-0.26.0-py3-none-any.whl", hash = "sha256:a8550e39c715643a3a07860d1a7b75a01d9695d2ee5fd0c4a6118fda65ed7d1d"},
+    {file = "streamlit_folium-0.26.0.tar.gz", hash = "sha256:9d744d39aa2493b81ca05b9031e0cb2486fd4d9625b7eac97a4465cf886ec87f"},
 ]
 
 [[package]]

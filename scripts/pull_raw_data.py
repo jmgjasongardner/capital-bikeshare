@@ -4,8 +4,13 @@ import argparse
 import datetime
 import boto3
 from dotenv import load_dotenv, find_dotenv
+import sys
+from pathlib import Path
 
-from src.capitalbike.data.raw_ingest import pull_and_write_from_cabi, pull_missing_files
+# Add project root to path so we can import pull_functions
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pull_functions
 
 load_dotenv(find_dotenv(), override=True)
 
@@ -36,12 +41,12 @@ def main() -> None:
                 # Monthly files
                 for month in range(1, 13):
                     ym = f"{year_str}{month:02d}"
-                    pull_and_write_from_cabi(ym)
+                    pull_functions.pull_and_write_from_cabi(ym)
             else:
-                pull_and_write_from_cabi(year_str)
+                pull_functions.pull_and_write_from_cabi(year_str)
     else:
         print("Checking for missing months…")
-        pull_missing_files(keys)
+        pull_functions.pull_missing_files(keys)
 
     print("✓ Raw ingestion complete")
 
