@@ -9,7 +9,7 @@ import streamlit as st
 import polars as pl
 from streamlit_folium import st_folium
 
-from src.capitalbike.app.io import read_parquet_from_s3
+from src.capitalbike.app.io import read_parquet_from_s3_cached, read_parquet_filtered
 from src.capitalbike.viz.maps import create_station_map, create_route_map
 from src.capitalbike.viz.station_analysis import (
     create_hourly_heatmap,
@@ -50,50 +50,54 @@ if "filter_rideable_types" not in st.session_state:
 # --------------------------------------------------
 # Data Loading Functions
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
+# Note: Using read_parquet_from_s3_cached (cache_resource) to avoid
+# serialization overhead. This saves ~50% memory vs cache_data.
+
 def load_stations():
-    """Load station dimension data."""
-    return read_parquet_from_s3(
+    """Load station dimension data (~0.1 MB)."""
+    return read_parquet_from_s3_cached(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/dimensions/stations.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
 def load_station_daily():
-    """Load station-level daily metrics."""
-    return read_parquet_from_s3(
+    """Load station-level daily metrics (~190 MB)."""
+    return read_parquet_from_s3_cached(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_daily.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
-def load_station_hourly():
-    """Load station-level hourly metrics."""
-    return read_parquet_from_s3(
-        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_hourly.parquet"
+def load_station_hourly_for_station(station_id: int):
+    """
+    Load hourly data for a specific station only.
+
+    This avoids loading the full 1.6GB hourly dataset into memory.
+    Only the rows for the requested station are loaded (~2-5 MB per station).
+    """
+    return read_parquet_filtered(
+        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_hourly.parquet",
+        filter_col="station_id",
+        filter_value=station_id,
     )
 
 
-@st.cache_data(ttl=3600)
 def load_station_routes():
-    """Load popular routes data (if available)."""
+    """Load popular routes data (~2 MB)."""
     try:
-        return read_parquet_from_s3(
+        return read_parquet_from_s3_cached(
             f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_routes.parquet"
         )
     except Exception:
         return None
 
 
-@st.cache_data(ttl=3600)
 def load_station_daily_detailed():
-    """Load detailed station daily metrics with member/bike type dimensions."""
+    """Load detailed station daily metrics (~574 MB)."""
     try:
-        return read_parquet_from_s3(
+        return read_parquet_from_s3_cached(
             f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_daily_detailed.parquet"
         )
     except Exception:
-        # Fallback: Return None if file doesn't exist yet
         return None
 
 
@@ -191,19 +195,17 @@ with progress_container.container():
     progress_bar = st.progress(0, text="Loading station locations...")
     stations_df = load_stations()
 
-    progress_bar.progress(20, text="Loading daily station metrics...")
+    progress_bar.progress(25, text="Loading daily station metrics...")
     daily_df = load_station_daily()
 
-    progress_bar.progress(40, text="Loading hourly patterns...")
-    hourly_df = load_station_hourly()
-
-    progress_bar.progress(60, text="Loading route data...")
+    progress_bar.progress(50, text="Loading route data...")
     routes_df = load_station_routes()
 
-    progress_bar.progress(80, text="Loading detailed metrics (largest file)...")
+    progress_bar.progress(75, text="Loading detailed metrics...")
     detailed_df = load_station_daily_detailed()
 
     progress_bar.progress(100, text="Data loaded!")
+    # Note: Hourly data (1.6GB) is loaded on-demand per station in Deep Dive
 
 # Clear the progress display
 progress_container.empty()
@@ -527,7 +529,8 @@ else:
 
     # Filter data for this station
     station_daily = daily_df.filter(pl.col("station_id") == station_id).sort("date")
-    station_hourly = hourly_df.filter(pl.col("station_id") == station_id)
+    # Hourly data loaded on-demand (saves 1.6GB memory vs loading full dataset)
+    station_hourly = load_station_hourly_for_station(station_id)
 
     # --------------------------------------------------
     # Tab 1: Overview
@@ -627,7 +630,7 @@ else:
         # Metric selector for heatmap
         heatmap_metric = st.selectbox(
             "Select Metric",
-            ["Checkouts", "Returns", "Net Flow"],
+            ["Net Flow", "Checkouts", "Returns"],
             key="heatmap_metric",
             help="Choose which metric to visualize in the heatmap"
         )
