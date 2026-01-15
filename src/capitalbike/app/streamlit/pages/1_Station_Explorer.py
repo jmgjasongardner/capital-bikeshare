@@ -601,9 +601,15 @@ else:
         state = station_info["state"][0] if "state" in station_info.columns else "Unknown"
         zip_code = station_info["zip_code"][0] if "zip_code" in station_info.columns else "Unknown"
 
+        # Handle stations with missing coordinates
+        if station_lat is not None and station_lng is not None:
+            location_str = f"{station_lat:.6f}, {station_lng:.6f}"
+        else:
+            location_str = "Coordinates unavailable"
+
         st.markdown(
             f"""
-            **Location**: {station_lat:.6f}, {station_lng:.6f}
+            **Location**: {location_str}
 
             **Address**: {city}, {state} {zip_code}
 
@@ -635,18 +641,34 @@ else:
             help="Choose which metric to visualize in the heatmap"
         )
 
-        st.markdown(
-            f"This heatmap shows the average number of **{heatmap_metric.lower()}** by hour of day and day of week."
-        )
+        if heatmap_metric == "Net Flow":
+            st.markdown(
+                "This heatmap shows the average **net flow** (checkouts minus returns) by hour and day of week."
+            )
+            st.caption(
+                "🔴 **Red (positive)** = more checkouts than returns (bikes leaving)  \n"
+                "🔵 **Blue (negative)** = more returns than checkouts (bikes arriving)"
+            )
+        else:
+            st.markdown(
+                f"This heatmap shows the average number of **{heatmap_metric.lower()}** by hour of day and day of week."
+            )
 
         if len(station_hourly) > 0:
             fig = create_hourly_heatmap(station_hourly, selected_station_name, metric_name=heatmap_metric)
             st.plotly_chart(fig, width='stretch')
 
-            st.info(
-                "**Tip**: Darker colors indicate higher demand. "
-                "Look for patterns like weekday commute peaks (8am, 5pm) or weekend leisure rides."
-            )
+            if heatmap_metric == "Net Flow":
+                st.info(
+                    "**Tip**: Net flow reveals station pressure patterns. "
+                    "Red cells indicate times when bikes are leaving (potential emptying risk). "
+                    "Blue cells indicate times when bikes are arriving (potential filling risk)."
+                )
+            else:
+                st.info(
+                    "**Tip**: Darker colors indicate higher demand. "
+                    "Look for patterns like weekday commute peaks (8am, 5pm) or weekend leisure rides."
+                )
         else:
             st.warning("No hourly data available for this station.")
 
