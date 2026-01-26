@@ -2,8 +2,8 @@ name: Keep Streamlit App Alive
 
 on:
   schedule:
-    # Run every 10 hours to prevent the app from sleeping (12-hour sleep timeout)
-    - cron: '0 */10 * * *'
+    # Run every 15 minutes to keep the app awake
+    - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
