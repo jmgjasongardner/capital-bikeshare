@@ -1,0 +1,26 @@
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    # Run every 10 hours to prevent the app from sleeping (12-hour sleep timeout)
+    - cron: '0 */10 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          # Ping the app to keep it awake
+          # The curl will follow redirects and output the HTTP status code
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "${{ vars.STREAMLIT_APP_URL }}" || echo "000")
+          echo "HTTP Status: $HTTP_STATUS"
+
+          # Any response (even errors) means the app is waking up
+          if [ "$HTTP_STATUS" = "000" ]; then
+            echo "Failed to reach the app - check the URL"
+            exit 1
+          else
+            echo "App pinged successfully!"
+          fi

@@ -15,7 +15,7 @@ st.set_page_config(
 # Sidebar
 # --------------------------------------------------
 st.sidebar.title("🚲 Capital Bikeshare")
-st.sidebar.caption("Monthly-updated system analytics")
+st.sidebar.caption("Monthly-updated system analytics \nCreated by Jason Gardner")
 
 # --------------------------------------------------
 # Page registry - Updated for new pages/ structure

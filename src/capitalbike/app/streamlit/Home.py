@@ -1,19 +1,18 @@
 import streamlit as st
 import polars as pl
 
-from src.capitalbike.app.io import read_parquet_from_s3
+from src.capitalbike.app.io import read_parquet_from_s3_cached
 from src.capitalbike.viz.timeseries import create_system_timeseries
 
 
 st.title("Capital Bikeshare System Overview")
 
 # --------------------------------------------------
-# Load data
+# Load data (using cache_resource for memory efficiency)
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
 def load_system_daily():
-    """Load system-level daily metrics with 1-hour cache."""
-    return read_parquet_from_s3(
+    """Load system-level daily metrics (~10 MB)."""
+    return read_parquet_from_s3_cached(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/system_daily.parquet"
     )
 

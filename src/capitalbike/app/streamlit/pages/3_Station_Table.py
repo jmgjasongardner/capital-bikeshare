@@ -9,45 +9,112 @@ import streamlit as st
 import polars as pl
 from datetime import timedelta
 
-from src.capitalbike.app.io import read_parquet_from_s3
+from src.capitalbike.app.io import read_parquet_from_s3_cached
 
 
 st.title("Station Table")
 
 # --------------------------------------------------
-# Load data
+# Session State
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
+if "station_table_entered" not in st.session_state:
+    st.session_state.station_table_entered = False
+if "include_electric_stats" not in st.session_state:
+    st.session_state.include_electric_stats = False
+
+# --------------------------------------------------
+# Data Loading Functions (using cache_resource for memory efficiency)
+# --------------------------------------------------
 def load_stations():
-    """Load station dimension data."""
-    return read_parquet_from_s3(
+    """Load station dimension data (~0.1 MB)."""
+    return read_parquet_from_s3_cached(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/dimensions/stations.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
 def load_station_daily():
-    """Load station-level daily metrics."""
-    return read_parquet_from_s3(
+    """Load station-level daily metrics (~190 MB)."""
+    return read_parquet_from_s3_cached(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_daily.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
 def load_station_daily_detailed():
-    """Load detailed station daily metrics with member/bike type dimensions."""
+    """Load detailed station daily metrics (~574 MB) - only load when needed."""
     try:
-        return read_parquet_from_s3(
+        return read_parquet_from_s3_cached(
             f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_daily_detailed.parquet"
         )
     except Exception:
-        # Fallback: Return None if file doesn't exist yet
         return None
 
 
-stations_df = load_stations()
-daily_df = load_station_daily()
-detailed_df = load_station_daily_detailed()
+# --------------------------------------------------
+# Configuration Screen (shown before data loads)
+# --------------------------------------------------
+if not st.session_state.station_table_entered:
+    st.markdown("""
+    View all Capital Bikeshare stations with aggregated metrics.
+
+    Configure your options below, then click **Load Station Table** to proceed.
+    """)
+
+    st.divider()
+
+    with st.form("config_form"):
+        include_electric = st.checkbox(
+            "Include Electric Bike Statistics",
+            value=False,
+            help="Calculates % of trips using electric bikes. Requires loading additional data (~574 MB), which may take longer."
+        )
+
+        st.caption("*Loading without electric stats is faster and uses less memory.*")
+
+        st.divider()
+
+        submitted = st.form_submit_button(
+            "Load Station Table",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if submitted:
+            st.session_state.include_electric_stats = include_electric
+            st.session_state.station_table_entered = True
+            st.rerun()
+
+    st.stop()
+
+
+# --------------------------------------------------
+# Load Data (only after user enters)
+# --------------------------------------------------
+progress_container = st.empty()
+
+with progress_container.container():
+    st.info("Loading Station Table data...")
+
+    progress_bar = st.progress(0, text="Loading station locations...")
+    stations_df = load_stations()
+
+    progress_bar.progress(50, text="Loading daily station metrics...")
+    daily_df = load_station_daily()
+
+    # Only load detailed data if user opted in
+    if st.session_state.include_electric_stats:
+        progress_bar.progress(75, text="Loading electric bike statistics...")
+        detailed_df = load_station_daily_detailed()
+    else:
+        detailed_df = None
+
+    progress_bar.progress(100, text="Data loaded!")
+
+progress_container.empty()
+
+# Reset button in sidebar
+if st.sidebar.button("Reset Options", use_container_width=True):
+    st.session_state.station_table_entered = False
+    st.rerun()
 
 # Get date range for filters
 min_date = daily_df["date"].min()
