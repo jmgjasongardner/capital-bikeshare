@@ -10,11 +10,11 @@ import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.capitalbike.app.io import read_parquet_from_s3
+from src.capitalbike.app.io import read_parquet_from_s3_cached
 
 
 st.set_page_config(page_title="Time Aggregation Analytics", layout="wide")
-st.title("⏰ Time Aggregation Analytics")
+st.title("Time Aggregation Analytics")
 
 st.markdown("""
 Explore Capital Bikeshare trip patterns aggregated by different time dimensions.
@@ -22,13 +22,12 @@ Analyze trends by day, day of week, month, or year to uncover seasonal and tempo
 """)
 
 # --------------------------------------------------
-# Load data
+# Load data (using cache_resource for memory efficiency)
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
 def load_time_aggregated():
     """Load time-based aggregates with day/week/month/year dimensions."""
     try:
-        return read_parquet_from_s3(
+        return read_parquet_from_s3_cached(
             f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/time_aggregated.parquet"
         )
     except Exception:
