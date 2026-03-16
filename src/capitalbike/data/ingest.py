@@ -205,3 +205,25 @@ def build_master_table(stations: pl.DataFrame, missing_months: bool = True) -> N
     )
 
     print(f"Stations written to s3://{PROC_BUCKET}/{STATIONS_KEY}")
+
+
+if __name__ == "__main__":
+    # Load existing station dimension for lat/lng enrichment during normalization.
+    # Falls back to an empty frame on first run (coordinates will be null until
+    # the station dimension is rebuilt at the end of build_master_table).
+    try:
+        buf = BytesIO()
+        _s3().download_fileobj(PROC_BUCKET, STATIONS_KEY, buf)
+        buf.seek(0)
+        stations = pl.read_parquet(buf)
+    except Exception:
+        stations = pl.DataFrame(
+            schema={
+                "station_id": pl.Int64,
+                "station_name": pl.Utf8,
+                "lat": pl.Float64,
+                "lng": pl.Float64,
+            }
+        )
+
+    build_master_table(stations, missing_months=True)
