@@ -1,0 +1,31 @@
+name: Weekly Heartbeat
+
+# Commits a timestamp file once a week to keep the repo active.
+# GitHub automatically disables scheduled workflows on repos with no
+# activity for 60 days. This commit resets that timer so keep-alive.yml
+# continues pinging the Streamlit app uninterrupted.
+
+on:
+  schedule:
+    # Every Monday at 6:00 AM UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write timestamp
+        run: echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .github/heartbeat.txt
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/heartbeat.txt
+          git commit -m "chore: weekly heartbeat [skip ci]"
+          git push

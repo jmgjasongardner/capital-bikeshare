@@ -32,7 +32,7 @@ def read_parquet_from_s3_cached(path: str) -> pl.DataFrame:
         return pl.read_parquet(f)
 
 
-@st.cache_data(show_spinner="Loading data from S3…")
+@st.cache_data(ttl=3600, show_spinner="Loading data from S3…")
 def read_parquet_from_s3(path: str) -> pl.DataFrame:
     """
     Read a parquet file from S3 with data caching.
