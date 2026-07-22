@@ -284,8 +284,10 @@ if len(summary_df) > 0:
     ])
 
     # Display table with column config
+    _display_pandas = display_df.to_pandas()
+    _display_pandas.index += 1
     st.dataframe(
-        display_df.to_pandas(),
+        _display_pandas,
         use_container_width=True,
         column_config={
             agg_level: st.column_config.TextColumn(agg_level),

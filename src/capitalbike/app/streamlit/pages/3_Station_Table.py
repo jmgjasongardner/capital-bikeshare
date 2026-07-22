@@ -461,6 +461,7 @@ if "Electric Return (%)" in display_pandas.columns:
     display_pandas["Electric Return (%)"] = display_pandas["Electric Return (%)"].round(1)
 
 # Display using st.dataframe with column configuration
+display_pandas.index += 1
 st.dataframe(
     display_pandas,
     width='stretch',

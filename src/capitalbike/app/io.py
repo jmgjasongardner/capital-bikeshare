@@ -16,7 +16,7 @@ def _get_s3fs() -> s3fs.S3FileSystem:
     )
 
 
-@st.cache_resource(ttl=3600)
+@st.cache_resource(ttl=86400)
 def read_parquet_from_s3_cached(path: str) -> pl.DataFrame:
     """
     Read a parquet file from S3 with resource caching.
@@ -32,7 +32,7 @@ def read_parquet_from_s3_cached(path: str) -> pl.DataFrame:
         return pl.read_parquet(f)
 
 
-@st.cache_data(ttl=3600, show_spinner="Loading data from S3…")
+@st.cache_data(ttl=86400, show_spinner="Loading data from S3…")
 def read_parquet_from_s3(path: str) -> pl.DataFrame:
     """
     Read a parquet file from S3 with data caching.
@@ -45,7 +45,7 @@ def read_parquet_from_s3(path: str) -> pl.DataFrame:
         return pl.read_parquet(f)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def read_parquet_filtered(path: str, filter_col: str, filter_value) -> pl.DataFrame:
     """
     Read a parquet file from S3 with a filter applied.

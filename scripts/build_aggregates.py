@@ -20,7 +20,12 @@ sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
 
-from src.capitalbike.data.summarize import build_all_summaries
+from src.capitalbike.data.summarize import (
+    build_all_summaries,
+    build_routes_by_member_rideable,
+    build_trip_patterns,
+    build_trip_duration_buckets,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -32,12 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Build Capital Bikeshare aggregate tables")
+    parser.add_argument(
+        "--only-new",
+        action="store_true",
+        help="Build only the three new Trip Analytics tables (faster, ~5-10 min)",
+    )
+    args = parser.parse_args()
+
     logger.info("=" * 70)
     logger.info("Capital Bikeshare - Aggregate Builder")
     logger.info("=" * 70)
-    logger.info("")
-    logger.info("This will build all summary/aggregate tables from the master trip data.")
-    logger.info("Expected duration: 15-20 minutes")
     logger.info("")
 
     # Load environment variables
@@ -46,8 +57,19 @@ def main():
     # Record start time
     start_time = time.time()
 
-    # Build all summaries
-    build_all_summaries()
+    if args.only_new:
+        logger.info("Building new Trip Analytics aggregates only...")
+        logger.info("")
+        build_routes_by_member_rideable()
+        logger.info("")
+        build_trip_patterns()
+        logger.info("")
+        build_trip_duration_buckets()
+    else:
+        logger.info("This will build all summary/aggregate tables from the master trip data.")
+        logger.info("Expected duration: 15-20 minutes")
+        logger.info("")
+        build_all_summaries()
 
     # Calculate elapsed time
     elapsed_time = time.time() - start_time
@@ -59,14 +81,17 @@ def main():
     logger.info(f"✅ All aggregates built successfully in {minutes}m {seconds}s!")
     logger.info("=" * 70)
     logger.info("")
-    logger.info("New aggregate files created:")
+    logger.info("Aggregate files available:")
     logger.info("  • station_daily.parquet")
-    logger.info("  • station_daily_detailed.parquet (NEW - enables fast filtering)")
+    logger.info("  • station_daily_detailed.parquet")
     logger.info("  • system_daily.parquet")
-    logger.info("  • system_daily_detailed.parquet (NEW - member/bike type breakdown)")
+    logger.info("  • system_daily_detailed.parquet")
     logger.info("  • station_hourly.parquet")
     logger.info("  • station_routes.parquet")
-    logger.info("  • time_aggregated.parquet (NEW - day/week/month/year analysis)")
+    logger.info("  • routes_by_member_rideable.parquet")
+    logger.info("  • trip_patterns.parquet")
+    logger.info("  • trip_duration_buckets.parquet")
+    logger.info("  • time_aggregated.parquet")
     logger.info("")
     logger.info("Your Streamlit app is now ready with all features enabled! 🚀")
     logger.info("")

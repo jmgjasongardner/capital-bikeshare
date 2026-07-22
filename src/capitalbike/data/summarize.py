@@ -599,6 +599,144 @@ def build_time_aggregated() -> None:
     logger.info(f"time_aggregated written to {out_uri} ({len(out):,} rows)")
 
 
+def build_routes_by_member_rideable(top_n: int = 100) -> None:
+    """
+    Build top routes broken out by member_type and rideable_type.
+
+    Allows the Trip Analytics page to filter Popular Routes by member/bike type
+    without scanning raw trip data.
+    """
+    trips = _trips_scan()
+    stations = _stations_scan()
+
+    trips = trips.with_columns([
+        pl.when(pl.col("member_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("member_type")).alias("member_type"),
+        pl.when(pl.col("rideable_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("rideable_type")).alias("rideable_type"),
+    ])
+
+    all_routes = (
+        trips.filter(
+            (pl.col("duration_sec") > 0) &
+            (pl.col("start_station_id") != pl.col("end_station_id"))
+        )
+        .group_by(["start_station_id", "end_station_id", "member_type", "rideable_type"])
+        .agg([
+            pl.len().alias("trip_count"),
+            pl.col("duration_sec").mean().alias("avg_duration_sec"),
+        ])
+        .filter(pl.col("trip_count") >= 5)
+        .with_columns(
+            pl.col("trip_count").rank(descending=True).over(["member_type", "rideable_type"]).alias("rank")
+        )
+        .filter(pl.col("rank") <= top_n)
+        .drop("rank")
+    )
+
+    routes_with_start = all_routes.join(
+        stations.select([
+            pl.col("station_id").alias("start_station_id"),
+            pl.col("station_name").alias("start_station_name"),
+        ]),
+        on="start_station_id",
+        how="left",
+        coalesce=True,
+    )
+
+    out = (
+        routes_with_start.join(
+            stations.select([
+                pl.col("station_id").alias("end_station_id"),
+                pl.col("station_name").alias("end_station_name"),
+            ]),
+            on="end_station_id",
+            how="left",
+            coalesce=True,
+        )
+        .select(["start_station_name", "end_station_name", "member_type", "rideable_type", "trip_count", "avg_duration_sec"])
+        .sort(["member_type", "rideable_type", "trip_count"], descending=[False, False, True])
+        .collect()
+    )
+
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/routes_by_member_rideable.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    logger.info(f"routes_by_member_rideable written to {out_uri} ({len(out):,} rows)")
+
+
+def build_trip_patterns() -> None:
+    """
+    Build hourly and weekday trip counts by year_month, member_type, and rideable_type.
+
+    Replaces raw trip scanning for the Temporal Patterns tab. Filtered views
+    are computed in-memory by slicing this small table.
+    """
+    trips = _trips_scan()
+
+    trips = trips.with_columns([
+        pl.when(pl.col("member_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("member_type")).alias("member_type"),
+        pl.when(pl.col("rideable_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("rideable_type")).alias("rideable_type"),
+    ])
+
+    out = (
+        trips.filter(pl.col("duration_sec") > 0)
+        .with_columns([
+            pl.col("started_at").dt.strftime("%Y-%m").alias("year_month"),
+            pl.col("started_at").dt.hour().alias("hour"),
+            pl.col("started_at").dt.weekday().alias("weekday"),
+        ])
+        .group_by(["year_month", "hour", "weekday", "member_type", "rideable_type"])
+        .agg([
+            pl.len().alias("trip_count"),
+            pl.col("duration_sec").mean().alias("avg_duration_sec"),
+        ])
+        .sort(["year_month", "hour", "weekday"])
+        .collect()
+    )
+
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/trip_patterns.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    logger.info(f"trip_patterns written to {out_uri} ({len(out):,} rows)")
+
+
+def build_trip_duration_buckets() -> None:
+    """
+    Build trip duration distribution in 5-minute buckets by year_month, member_type, rideable_type.
+
+    Replaces raw trip scanning for the Duration Analysis tab. Bucket 120 captures
+    all trips >= 120 minutes (2 hours). Trips > 24 hours are excluded as errors.
+    """
+    trips = _trips_scan()
+
+    trips = trips.with_columns([
+        pl.when(pl.col("member_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("member_type")).alias("member_type"),
+        pl.when(pl.col("rideable_type").is_null()).then(pl.lit("unknown")).otherwise(pl.col("rideable_type")).alias("rideable_type"),
+    ])
+
+    out = (
+        trips.filter(
+            (pl.col("duration_sec") > 0) & (pl.col("duration_sec") < 86400)
+        )
+        .with_columns([
+            pl.col("started_at").dt.strftime("%Y-%m").alias("year_month"),
+            (pl.col("duration_sec") / 60).alias("duration_min"),
+        ])
+        .with_columns(
+            pl.when(pl.col("duration_min") >= 120)
+            .then(pl.lit(120))
+            .otherwise((pl.col("duration_min") / 5).floor() * 5)
+            .cast(pl.Int32)
+            .alias("bucket_start_min")
+        )
+        .group_by(["year_month", "bucket_start_min", "member_type", "rideable_type"])
+        .agg(pl.len().alias("trip_count"))
+        .sort(["year_month", "bucket_start_min"])
+        .collect()
+    )
+
+    out_uri = f"s3://{PROC_BUCKET}/{AGG_PREFIX}/trip_duration_buckets.parquet"
+    _write_parquet_to_s3(out, out_uri)
+    logger.info(f"trip_duration_buckets written to {out_uri} ({len(out):,} rows)")
+
+
 def build_all_summaries() -> None:
     """Build all summary/aggregate tables from master trips data."""
     logger.info("Building all summary tables...")
@@ -623,6 +761,15 @@ def build_all_summaries() -> None:
     logger.info("")
 
     build_station_routes()
+    logger.info("")
+
+    build_routes_by_member_rideable()
+    logger.info("")
+
+    build_trip_patterns()
+    logger.info("")
+
+    build_trip_duration_buckets()
     logger.info("")
 
     build_time_aggregated()

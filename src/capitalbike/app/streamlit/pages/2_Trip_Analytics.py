@@ -9,7 +9,7 @@ import streamlit as st
 import polars as pl
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import timedelta
+from datetime import date
 from streamlit_folium import st_folium
 
 from src.capitalbike.app.io import read_parquet_from_s3
@@ -21,35 +21,63 @@ st.title("Trip Analytics")
 # --------------------------------------------------
 # Load data
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_station_routes():
-    """Load popular routes data."""
     return read_parquet_from_s3(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/station_routes.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
+def load_routes_by_member_rideable():
+    return read_parquet_from_s3(
+        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/routes_by_member_rideable.parquet"
+    )
+
+
+@st.cache_data(ttl=86400)
 def load_system_daily():
-    """Load system-level daily metrics."""
     return read_parquet_from_s3(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/system_daily.parquet"
     )
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
+def load_system_daily_detailed():
+    return read_parquet_from_s3(
+        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/system_daily_detailed.parquet"
+    )
+
+
+@st.cache_data(ttl=86400)
+def load_trip_patterns():
+    return read_parquet_from_s3(
+        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/trip_patterns.parquet"
+    )
+
+
+@st.cache_data(ttl=86400)
+def load_trip_duration_buckets():
+    return read_parquet_from_s3(
+        f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/aggregates/trip_duration_buckets.parquet"
+    )
+
+
+@st.cache_data(ttl=86400)
 def load_stations():
-    """Load station dimension data."""
     return read_parquet_from_s3(
         f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/dimensions/stations.parquet"
     )
 
 
 routes_df = load_station_routes()
+routes_typed_df = load_routes_by_member_rideable()
 system_df = load_system_daily()
+system_detailed_df = load_system_daily_detailed()
+patterns_df = load_trip_patterns()
+duration_df = load_trip_duration_buckets()
 stations_df = load_stations()
 
-# Get date range
 min_date = system_df["date"].min()
 max_date = system_df["date"].max()
 
@@ -58,83 +86,80 @@ max_date = system_df["date"].max()
 # --------------------------------------------------
 st.sidebar.header("Filters")
 
-date_range = st.sidebar.date_input(
-    "Date Range",
-    value=(max_date - timedelta(days=365), max_date),
-    min_value=min_date,
-    max_value=max_date,
-    help="Filter trip data by date range (uses full dataset if no advanced filters)",
-)
+with st.sidebar.form("filters_form"):
+    date_range = st.date_input(
+        "Date Range",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        help="Filter by date range. Defaults to all-time.",
+    )
 
-# Handle date range
+    st.markdown("---")
+    st.subheader("Member & Bike Type")
+
+    member_filter = st.multiselect(
+        "Member Type",
+        ["member", "casual"],
+        default=["member", "casual"],
+        help="Filter by rider membership status",
+    )
+
+    rideable_filter = st.multiselect(
+        "Bike Type",
+        ["classic_bike", "electric_bike", "docked_bike"],
+        default=["classic_bike", "electric_bike", "docked_bike"],
+        help="Filter by bike type (post-2020 data only)",
+    )
+
+    st.form_submit_button("Apply Filters", use_container_width=True)
+
+# Parse date range
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
     start_date = end_date = date_range
 
-# Advanced filters
-st.sidebar.markdown("---")
-st.sidebar.subheader("Advanced Filters")
-st.sidebar.info("⚠️ Advanced filters query raw trip data (slower)")
+# Determine what's actively filtered
+date_filtered = start_date != min_date or end_date != max_date
+member_filtered = set(member_filter) != {"member", "casual"}
+rideable_filtered = set(rideable_filter) != {"classic_bike", "electric_bike", "docked_bike"}
+is_filtered = date_filtered or member_filtered or rideable_filtered
 
-member_filter = st.sidebar.multiselect(
-    "Member Type",
-    ["member", "casual"],
-    default=["member", "casual"],
-    help="Filter by rider membership status",
-)
+# year_month strings for filtering monthly tables
+start_ym = start_date.strftime("%Y-%m")
+end_ym = end_date.strftime("%Y-%m")
 
-rideable_filter = st.sidebar.multiselect(
-    "Bike Type",
-    ["classic_bike", "electric_bike", "docked_bike"],
-    default=["classic_bike", "electric_bike", "docked_bike"],
-    help="Filter by bike type (post-2020 data only)",
-)
-
-use_advanced_filters = len(member_filter) < 2 or len(rideable_filter) < 3
 
 # --------------------------------------------------
-# Load and filter trip data if needed
+# Filter helpers (all operate on in-memory DataFrames — fast)
 # --------------------------------------------------
-if use_advanced_filters:
-    @st.cache_data(ttl=3600)
-    def load_filtered_trips(start, end, members, rideables):
-        """Load and filter raw trips data."""
-        import os
+def _apply_member_rideable(df: pl.DataFrame) -> pl.DataFrame:
+    if member_filtered:
+        df = df.filter(pl.col("member_type").is_in(member_filter))
+    if rideable_filtered:
+        df = df.filter(pl.col("rideable_type").is_in(rideable_filter))
+    return df
 
-        trips = pl.scan_parquet(
-            f"s3://{st.secrets['S3_BUCKET_PROCESSED']}/master/trips/year=*/month=*/part.parquet",
-            storage_options={"aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1")}
-        )
 
-        # Apply filters
-        trips_filtered = trips.filter(
-            (pl.col("started_at").dt.date().is_between(start, end)) &
-            (pl.col("duration_sec") > 0)  # Remove invalid trips
-        )
+def filtered_system_detailed() -> pl.DataFrame:
+    df = system_detailed_df.filter(pl.col("date").is_between(start_date, end_date))
+    return _apply_member_rideable(df)
 
-        # Member type filter (case-insensitive)
-        if members and len(members) < 2:
-            member_conditions = [pl.col("member_type").str.to_lowercase() == m for m in members]
-            member_filter_expr = member_conditions[0]
-            for cond in member_conditions[1:]:
-                member_filter_expr = member_filter_expr | cond
-            trips_filtered = trips_filtered.filter(member_filter_expr)
 
-        # Rideable type filter
-        if rideables and len(rideables) < 3:
-            rideable_filter_expr = pl.col("rideable_type").is_in(rideables)
-            trips_filtered = trips_filtered.filter(rideable_filter_expr)
+def filtered_patterns() -> pl.DataFrame:
+    df = patterns_df.filter(
+        (pl.col("year_month") >= start_ym) & (pl.col("year_month") <= end_ym)
+    )
+    return _apply_member_rideable(df)
 
-        # Sample if too large (performance optimization)
-        return trips_filtered.limit(500_000).collect()
 
-    with st.spinner("Loading trip data with filters..."):
-        trips_data = load_filtered_trips(start_date, end_date, member_filter, rideable_filter)
+def filtered_duration_buckets() -> pl.DataFrame:
+    df = duration_df.filter(
+        (pl.col("year_month") >= start_ym) & (pl.col("year_month") <= end_ym)
+    )
+    return _apply_member_rideable(df)
 
-    st.info(f"📊 Showing {len(trips_data):,} trips (sampled for performance)")
-else:
-    trips_data = None
 
 # --------------------------------------------------
 # Tabs
@@ -150,39 +175,38 @@ with tab1:
     st.markdown("### Most Popular Routes")
     st.markdown("Routes ranked by total number of trips between station pairs.")
 
-    # Show top N routes
     top_n = st.slider("Number of routes to display", 5, 50, 20, 5)
 
-    if not use_advanced_filters:
-        # Use pre-aggregated routes data
+    if not member_filtered and not rideable_filtered:
+        # Use all-time pre-aggregated routes (has lat/lng for map)
         top_routes = routes_df.head(top_n)
+        show_map = True
     else:
-        # Aggregate from filtered trips
-        if trips_data is not None and len(trips_data) > 0:
-            top_routes = (
-                trips_data.group_by(["start_station_name", "end_station_name"])
-                .agg([
-                    pl.len().alias("trip_count"),
-                    pl.col("duration_sec").mean().alias("avg_duration_sec"),
-                ])
-                .sort("trip_count", descending=True)
-                .head(top_n)
-            )
-        else:
-            top_routes = None
+        # Aggregate filtered routes_typed_df in memory
+        filtered_routes = _apply_member_rideable(routes_typed_df)
+        top_routes = (
+            filtered_routes.group_by(["start_station_name", "end_station_name"])
+            .agg([
+                pl.col("trip_count").sum().alias("trip_count"),
+                pl.col("avg_duration_sec").mean().alias("avg_duration_sec"),
+            ])
+            .sort("trip_count", descending=True)
+            .head(top_n)
+        )
+        show_map = False
+
+    if date_filtered:
+        st.info("ℹ️ Route counts reflect all-time data. Date filtering is not supported for route rankings.")
 
     if top_routes is not None and len(top_routes) > 0:
-        # Create route labels
         top_routes_display = top_routes.with_columns(
             (pl.col("start_station_name") + " → " + pl.col("end_station_name")).alias("route")
         )
 
-        # Horizontal bar chart
         fig = go.Figure()
-
         fig.add_trace(
             go.Bar(
-                x=top_routes_display["trip_count"][::-1],  # Reverse for top-to-bottom display
+                x=top_routes_display["trip_count"][::-1],
                 y=top_routes_display["route"][::-1],
                 orientation="h",
                 marker=dict(
@@ -198,7 +222,6 @@ with tab1:
                 customdata=(top_routes_display["avg_duration_sec"][::-1] / 60),
             )
         )
-
         fig.update_layout(
             title=f"Top {top_n} Most Popular Routes",
             xaxis_title="Number of Trips",
@@ -206,46 +229,35 @@ with tab1:
             height=max(400, top_n * 20),
             margin=dict(l=300, r=20, t=60, b=40),
         )
-
         st.plotly_chart(fig, width='stretch')
 
-        # Summary stats
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Routes", f"{len(routes_df):,}")
-        col2.metric(
-            "Most Popular Route",
-            f"{top_routes['trip_count'][0]:,} trips"
-        )
+        col2.metric("Most Popular Route", f"{top_routes['trip_count'][0]:,} trips")
         col3.metric(
             "Avg Trip Count (Top 20)",
             f"{top_routes.head(20)['trip_count'].mean():,.0f}"
         )
 
-        # Route map visualization
-        if not use_advanced_filters and len(top_routes) > 0:
+        if show_map:
             st.markdown("---")
             st.markdown("#### 🗺️ Route Map Visualization")
             st.markdown("Top routes visualized on the DC metro area map with color-coded popularity.")
-
-            # Create map showing top routes across the system
-            route_map = create_system_routes_map(
-                top_routes,
-                top_n=min(top_n, 15),  # Limit to 15 routes for performance
-            )
-
+            route_map = create_system_routes_map(top_routes, top_n=min(top_n, 15))
             st_folium(route_map, width=1200, height=500, key="popular_routes_map", returned_objects=[])
             st.caption("💡 Routes are color-coded from blue (less popular) to red (most popular). Line thickness indicates relative popularity.")
-        elif use_advanced_filters:
-            st.info("💡 Route map is only available when using pre-aggregated data (no advanced filters).")
+        else:
+            st.info("💡 Route map is available when no member/bike type filters are applied.")
 
-        # Show data table
         with st.expander("📊 View Route Data Table"):
             display_df = top_routes_display.select([
                 pl.col("route").alias("Route"),
                 pl.col("trip_count").alias("Total Trips"),
                 (pl.col("avg_duration_sec") / 60).round(1).alias("Avg Duration (min)"),
             ])
-            st.dataframe(display_df.to_pandas(), width='stretch', height=400)
+            _df = display_df.to_pandas()
+            _df.index += 1
+            st.dataframe(_df, width='stretch', height=400)
     else:
         st.warning("No route data available for the selected filters.")
 
@@ -255,73 +267,84 @@ with tab1:
 with tab2:
     st.markdown("### Trip Duration Distribution")
 
-    if use_advanced_filters and trips_data is not None:
-        # Use filtered trip data
-        durations = trips_data["duration_sec"] / 60  # Convert to minutes
+    dur_buckets = filtered_duration_buckets()
+
+    if len(dur_buckets) == 0:
+        st.warning("No duration data available for the selected filters.")
     else:
-        # Use system-level avg duration as proxy
-        st.info("💡 Using aggregated data. Apply advanced filters for detailed distribution.")
-        durations = None
-
-    if durations is not None and len(durations) > 0:
-        # Filter outliers for better visualization (remove top 1%)
-        p99 = durations.quantile(0.99)
-        durations_filtered = durations.filter(durations <= p99)
-
-        # Histogram
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Histogram(
-                x=durations_filtered.to_numpy(),
-                nbinsx=50,
-                marker=dict(color="#17becf", line=dict(color="white", width=1)),
-                hovertemplate="Duration: %{x:.1f} min<br>Count: %{y:,}<extra></extra>",
-            )
+        # Aggregate bucket counts across all dimensions
+        bucket_agg = (
+            dur_buckets.group_by("bucket_start_min")
+            .agg(pl.col("trip_count").sum())
+            .sort("bucket_start_min")
         )
 
+        total_trips = bucket_agg["trip_count"].sum()
+
+        # Approximate stats from bucket midpoints
+        midpoints = bucket_agg["bucket_start_min"].cast(pl.Float64) + 2.5
+        counts = bucket_agg["trip_count"].cast(pl.Float64)
+        mean_dur = float((midpoints * counts).sum() / total_trips)
+        # Approximate median: find bucket where cumulative count crosses 50%
+        cumulative = counts.cum_sum()
+        median_bucket_idx = int((cumulative < total_trips * 0.5).sum())
+        median_dur = float(midpoints[median_bucket_idx]) if median_bucket_idx < len(midpoints) else mean_dur
+        # Approximate 99th percentile
+        p99_bucket_idx = int((cumulative < total_trips * 0.99).sum())
+        p99_dur = float(bucket_agg["bucket_start_min"][min(p99_bucket_idx, len(bucket_agg) - 1)]) + 5.0
+
+        # Bar chart (histogram from buckets)
+        labels = [
+            f"{r}+" if r == 120 else f"{r}–{r+5}"
+            for r in bucket_agg["bucket_start_min"].to_list()
+        ]
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=bucket_agg["trip_count"].to_list(),
+                marker=dict(color="#17becf", line=dict(color="white", width=1)),
+                hovertemplate="Duration: %{x} min<br>Trips: %{y:,}<extra></extra>",
+            )
+        )
         fig.update_layout(
-            title="Trip Duration Distribution (99th percentile)",
+            title="Trip Duration Distribution",
             xaxis_title="Duration (minutes)",
             yaxis_title="Number of Trips",
             height=400,
-            bargap=0.1,
+            bargap=0.05,
+            xaxis=dict(tickangle=-45),
         )
-
         st.plotly_chart(fig, width='stretch')
 
-        # Summary statistics
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Mean Duration", f"{durations.mean():.1f} min")
-        col2.metric("Median Duration", f"{durations.median():.1f} min")
-        col3.metric("Std Deviation", f"{durations.std():.1f} min")
-        col4.metric("99th Percentile", f"{p99:.1f} min")
+        col1.metric("Total Trips", f"{total_trips:,}")
+        col2.metric("Mean Duration", f"{mean_dur:.1f} min")
+        col3.metric("Median Duration", f"{median_dur:.1f} min")
+        col4.metric("~99th Percentile", f"{p99_dur:.0f} min")
 
-        # Duration ranges
+        # Duration range breakdown
         st.markdown("#### Trip Duration Ranges")
-
         ranges = [
-            ("Quick (0-10 min)", 0, 10),
-            ("Short (10-20 min)", 10, 20),
-            ("Medium (20-30 min)", 20, 30),
-            ("Long (30-60 min)", 30, 60),
-            ("Very Long (60+ min)", 60, float('inf')),
+            ("Quick (0–10 min)", 0, 2),
+            ("Short (10–20 min)", 2, 4),
+            ("Medium (20–30 min)", 4, 6),
+            ("Long (30–60 min)", 6, 12),
+            ("Very Long (60+ min)", 12, None),
         ]
-
         range_data = []
-        for label, min_dur, max_dur in ranges:
-            if max_dur == float('inf'):
-                count = len(durations.filter(durations >= min_dur))
+        for label, start_bucket_idx, end_bucket_idx in ranges:
+            if end_bucket_idx is None:
+                count = int(counts[start_bucket_idx:].sum())
             else:
-                count = len(durations.filter((durations >= min_dur) & (durations < max_dur)))
-            pct = (count / len(durations)) * 100
+                count = int(counts[start_bucket_idx:end_bucket_idx].sum())
+            pct = (count / total_trips) * 100
             range_data.append({"Range": label, "Count": count, "Percentage": pct})
 
         range_df = pl.DataFrame(range_data)
 
-        # Pie chart
         fig = go.Figure()
-
         fig.add_trace(
             go.Pie(
                 labels=range_df["Range"],
@@ -330,16 +353,8 @@ with tab2:
                 marker=dict(colors=px.colors.sequential.Teal),
             )
         )
-
-        fig.update_layout(
-            title="Trip Distribution by Duration Range",
-            height=400,
-        )
-
+        fig.update_layout(title="Trip Distribution by Duration Range", height=400)
         st.plotly_chart(fig, width='stretch')
-
-    else:
-        st.warning("Apply advanced filters to see detailed duration analysis.")
 
 # --------------------------------------------------
 # TAB 3: Temporal Patterns
@@ -347,31 +362,28 @@ with tab2:
 with tab3:
     st.markdown("### Trip Patterns by Time")
 
-    if use_advanced_filters and trips_data is not None:
-        # Hour of day analysis
-        st.markdown("#### Trips by Hour of Day")
+    pats = filtered_patterns()
 
+    if len(pats) == 0:
+        st.warning("No pattern data available for the selected filters.")
+    else:
+        # Hour of day
+        st.markdown("#### Trips by Hour of Day")
         hourly = (
-            trips_data.group_by("hour")
-            .agg(pl.len().alias("trip_count"))
+            pats.group_by("hour")
+            .agg(pl.col("trip_count").sum())
             .sort("hour")
         )
 
         fig = go.Figure()
-
         fig.add_trace(
             go.Bar(
                 x=hourly["hour"],
                 y=hourly["trip_count"],
-                marker=dict(
-                    color=hourly["trip_count"],
-                    colorscale="Blues",
-                    showscale=False,
-                ),
+                marker=dict(color=hourly["trip_count"], colorscale="Blues", showscale=False),
                 hovertemplate="<b>%{x}:00</b><br>Trips: %{y:,}<extra></extra>",
             )
         )
-
         fig.update_layout(
             title="Trip Volume by Hour of Day",
             xaxis_title="Hour",
@@ -379,27 +391,21 @@ with tab3:
             height=400,
             xaxis=dict(tickmode="linear", tick0=0, dtick=1),
         )
-
         st.plotly_chart(fig, width='stretch')
 
-        # Day of week analysis
+        # Day of week
         st.markdown("#### Trips by Day of Week")
-
         weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
         daily = (
-            trips_data.group_by("weekday")
-            .agg(pl.len().alias("trip_count"))
+            pats.group_by("weekday")
+            .agg(pl.col("trip_count").sum())
             .sort("weekday")
         )
-
-        # Map weekday numbers to labels
         daily = daily.with_columns(
             pl.col("weekday").replace({i: weekday_labels[i] for i in range(7)}).alias("weekday_label")
         )
 
         fig = go.Figure()
-
         fig.add_trace(
             go.Bar(
                 x=daily["weekday_label"],
@@ -408,147 +414,96 @@ with tab3:
                 hovertemplate="<b>%{x}</b><br>Trips: %{y:,}<extra></extra>",
             )
         )
-
         fig.update_layout(
             title="Trip Volume by Day of Week",
             xaxis_title="Day of Week",
             yaxis_title="Number of Trips",
             height=400,
         )
-
         st.plotly_chart(fig, width='stretch')
 
-        # Peak hours identification
+        # Peak hours
         st.markdown("#### Peak Hours")
         peak_hours = hourly.sort("trip_count", descending=True).head(3)
-
         col1, col2, col3 = st.columns(3)
         for i, col in enumerate([col1, col2, col3]):
             if i < len(peak_hours):
-                hour = peak_hours["hour"][i]
-                count = peak_hours["trip_count"][i]
-                col.metric(
-                    f"Peak #{i+1}",
-                    f"{hour:02d}:00",
-                    f"{count:,} trips"
-                )
+                col.metric(f"Peak #{i+1}", f"{peak_hours['hour'][i]:02d}:00", f"{peak_hours['trip_count'][i]:,} trips")
 
-    else:
-        st.info("💡 Apply advanced filters to see detailed temporal patterns.")
+    # System-wide daily trend always shown
+    st.markdown("---")
+    st.markdown("#### System-Wide Daily Trends")
+    daily_sys = (
+        filtered_system_detailed()
+        .group_by("date")
+        .agg(pl.col("trips").sum())
+        .sort("date")
+    )
 
-        # Show system-level trends as alternative
-        st.markdown("#### System-Wide Daily Trends")
-
-        daily_filtered = system_df.filter(
-            pl.col("date").is_between(start_date, end_date)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=daily_sys["date"],
+            y=daily_sys["trips"],
+            mode="lines",
+            line=dict(color="#3498db", width=2),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Trips: %{y:,}<extra></extra>",
         )
-
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Scatter(
-                x=daily_filtered["date"],
-                y=daily_filtered["trips"],
-                mode="lines",
-                line=dict(color="#3498db", width=2),
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Trips: %{y:,}<extra></extra>",
-            )
-        )
-
-        fig.update_layout(
-            title="Daily Trip Volume",
-            xaxis_title="Date",
-            yaxis_title="Number of Trips",
-            height=400,
-            hovermode="x",
-        )
-
-        st.plotly_chart(fig, width='stretch')
+    )
+    fig.update_layout(
+        title="Daily Trip Volume",
+        xaxis_title="Date",
+        yaxis_title="Number of Trips",
+        height=400,
+        hovermode="x",
+    )
+    st.plotly_chart(fig, width='stretch')
 
 # --------------------------------------------------
 # TAB 4: Extremes & Records
 # --------------------------------------------------
 with tab4:
-    st.markdown("### Trip Extremes & Records")
+    st.markdown("### Extremes & Records")
 
-    if use_advanced_filters and trips_data is not None:
-        # Longest trips
-        st.markdown("#### 🏆 Longest Trips")
+    sys_filtered = filtered_system_detailed()
 
-        longest = trips_data.sort("duration_sec", descending=True).head(10)
-
-        longest_display = longest.select([
-            (pl.col("start_station_name") + " → " + pl.col("end_station_name")).alias("Route"),
-            pl.col("started_at").dt.date().alias("Date"),
-            (pl.col("duration_sec") / 3600).round(2).alias("Duration (hours)"),
-            pl.col("member_type").alias("Member Type"),
-        ])
-
-        st.dataframe(longest_display.to_pandas(), width='stretch')
-
-        # Shortest trips (but > 1 min to filter out errors)
-        st.markdown("#### ⚡ Shortest Trips (> 1 minute)")
-
-        shortest = (
-            trips_data.filter(pl.col("duration_sec") > 60)
-            .sort("duration_sec")
-            .head(10)
+    if len(sys_filtered) == 0:
+        st.warning("No data available for the selected filters.")
+    else:
+        # Busiest / quietest day
+        st.markdown("#### System-Wide Records")
+        daily_totals = (
+            sys_filtered.group_by("date")
+            .agg(pl.col("trips").sum())
+            .sort("trips", descending=True)
         )
 
-        shortest_display = shortest.select([
-            (pl.col("start_station_name") + " → " + pl.col("end_station_name")).alias("Route"),
-            pl.col("started_at").dt.date().alias("Date"),
-            (pl.col("duration_sec") / 60).round(2).alias("Duration (minutes)"),
-            pl.col("member_type").alias("Member Type"),
-        ])
-
-        st.dataframe(shortest_display.to_pandas(), width='stretch')
-
-        # Statistics
-        st.markdown("---")
-        st.markdown("#### 📊 Overall Statistics")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        col1.metric(
-            "Longest Trip",
-            f"{(longest['duration_sec'][0] / 3600):.1f} hrs"
-        )
-        col2.metric(
-            "Shortest Trip",
-            f"{shortest['duration_sec'][0]:.0f} sec"
-        )
-        col3.metric(
-            "Total Trips",
-            f"{len(trips_data):,}"
-        )
-
-        # Most active day
-        most_active_day = (
-            trips_data.group_by(pl.col("started_at").dt.date().alias("date"))
-            .agg(pl.len().alias("count"))
-            .sort("count", descending=True)
-            .head(1)
-        )
-
-        if len(most_active_day) > 0:
-            col4.metric(
-                "Most Active Day",
-                most_active_day["date"][0].strftime("%Y-%m-%d"),
-                f"{most_active_day['count'][0]:,} trips"
+        col1, col2 = st.columns(2)
+        if len(daily_totals) > 0:
+            busiest = daily_totals.head(1)
+            col1.metric(
+                "Busiest Day",
+                busiest["date"][0].strftime("%Y-%m-%d"),
+                f"{busiest['trips'][0]:,} trips",
+            )
+            quietest = daily_totals.tail(1)
+            col2.metric(
+                "Quietest Day",
+                quietest["date"][0].strftime("%Y-%m-%d"),
+                f"{quietest['trips'][0]:,} trips",
             )
 
-        # Member vs Casual breakdown
-        st.markdown("#### 👥 Member Type Breakdown")
+        st.markdown("---")
 
+        # Member type breakdown
+        st.markdown("#### 👥 Member Type Breakdown")
         member_breakdown = (
-            trips_data.group_by("member_type")
-            .agg(pl.len().alias("count"))
+            sys_filtered.group_by("member_type")
+            .agg(pl.col("trips").sum().alias("count"))
             .sort("count", descending=True)
         )
 
         fig = go.Figure()
-
         fig.add_trace(
             go.Bar(
                 x=member_breakdown["member_type"],
@@ -557,79 +512,67 @@ with tab4:
                 hovertemplate="<b>%{x}</b><br>Trips: %{y:,}<extra></extra>",
             )
         )
-
         fig.update_layout(
             title="Trips by Member Type",
             xaxis_title="Member Type",
             yaxis_title="Number of Trips",
             height=400,
         )
-
         st.plotly_chart(fig, width='stretch')
 
-        # Rideable type breakdown (if data available)
-        if "rideable_type" in trips_data.columns:
-            rideable_breakdown = (
-                trips_data.filter(pl.col("rideable_type").is_not_null())
-                .group_by("rideable_type")
-                .agg(pl.len().alias("count"))
-                .sort("count", descending=True)
-            )
-
-            if len(rideable_breakdown) > 0:
-                st.markdown("#### 🚲 Bike Type Breakdown")
-
-                fig = go.Figure()
-
-                fig.add_trace(
-                    go.Bar(
-                        x=rideable_breakdown["rideable_type"],
-                        y=rideable_breakdown["count"],
-                        marker=dict(color=["#2ecc71", "#f39c12", "#9b59b6"]),
-                        hovertemplate="<b>%{x}</b><br>Trips: %{y:,}<extra></extra>",
-                    )
-                )
-
-                fig.update_layout(
-                    title="Trips by Bike Type",
-                    xaxis_title="Bike Type",
-                    yaxis_title="Number of Trips",
-                    height=400,
-                )
-
-                st.plotly_chart(fig, width='stretch')
-
-    else:
-        st.info("💡 Apply advanced filters to see extreme trip records and detailed breakdowns.")
-
-        # Show some aggregate stats as alternative
-        st.markdown("#### System-Wide Records")
-
-        col1, col2 = st.columns(2)
-
-        # Busiest day
-        daily_filtered = system_df.filter(
-            pl.col("date").is_between(start_date, end_date)
+        # Rideable type breakdown
+        rideable_breakdown = (
+            sys_filtered.filter(pl.col("rideable_type") != "unknown")
+            .group_by("rideable_type")
+            .agg(pl.col("trips").sum().alias("count"))
+            .sort("count", descending=True)
         )
 
-        busiest_day = daily_filtered.sort("trips", descending=True).head(1)
-
-        if len(busiest_day) > 0:
-            col1.metric(
-                "Busiest Day",
-                busiest_day["date"][0].strftime("%Y-%m-%d"),
-                f"{busiest_day['trips'][0]:,} trips"
+        if len(rideable_breakdown) > 0:
+            st.markdown("#### 🚲 Bike Type Breakdown")
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=rideable_breakdown["rideable_type"],
+                    y=rideable_breakdown["count"],
+                    marker=dict(color=["#2ecc71", "#f39c12", "#9b59b6"]),
+                    hovertemplate="<b>%{x}</b><br>Trips: %{y:,}<extra></extra>",
+                )
             )
-
-        # Quietest day
-        quietest_day = daily_filtered.sort("trips").head(1)
-
-        if len(quietest_day) > 0:
-            col2.metric(
-                "Quietest Day",
-                quietest_day["date"][0].strftime("%Y-%m-%d"),
-                f"{quietest_day['trips'][0]:,} trips"
+            fig.update_layout(
+                title="Trips by Bike Type",
+                xaxis_title="Bike Type",
+                yaxis_title="Number of Trips",
+                height=400,
             )
+            st.plotly_chart(fig, width='stretch')
+
+        # Year-over-year totals
+        st.markdown("#### 📅 Annual Trip Totals")
+        yearly = (
+            sys_filtered
+            .with_columns(pl.col("date").dt.year().alias("year"))
+            .group_by("year")
+            .agg(pl.col("trips").sum())
+            .sort("year")
+        )
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=yearly["year"],
+                y=yearly["trips"],
+                marker=dict(color="#8e44ad"),
+                hovertemplate="<b>%{x}</b><br>Trips: %{y:,}<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            title="Annual Trip Volume",
+            xaxis_title="Year",
+            yaxis_title="Number of Trips",
+            height=400,
+        )
+        st.plotly_chart(fig, width='stretch')
 
 # --------------------------------------------------
 # Help Section
@@ -643,23 +586,18 @@ with st.expander("ℹ️ About This Page"):
         This page provides insights into Capital Bikeshare trip patterns and characteristics.
 
         ### Data Sources
-        - **Default Mode**: Uses pre-aggregated route data for fast performance
-        - **Advanced Filters**: Queries raw trip data (slower, but more detailed)
+        All views use pre-aggregated summary tables — no raw data is scanned at query time,
+        so filtering is near-instant regardless of the date range or filters selected.
 
         ### Tabs
         1. **Popular Routes**: Most frequently traveled station-to-station routes
         2. **Trip Duration Analysis**: Distribution of trip lengths and patterns
         3. **Temporal Patterns**: How trips vary by hour and day of week
-        4. **Extremes & Records**: Longest/shortest trips, busiest days, member breakdowns
+        4. **Extremes & Records**: Busiest days, member breakdowns, annual totals
 
-        ### Performance Notes
-        - Pre-aggregated data loads instantly
-        - Advanced filters may take 10-30 seconds on first load
-        - Results are cached for 1 hour
-
-        ### Tips
-        - Use the date range filter to focus on specific time periods
-        - Apply member/bike type filters for targeted analysis
-        - Export data using the table views in each tab
+        ### Notes
+        - Route rankings reflect all-time trip counts; date filtering does not affect route order
+        - Bike type data is only available for post-2020 trips
+        - Duration stats (mean, median, 99th pct) are approximated from 5-minute buckets
         """
     )
